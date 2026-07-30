@@ -138,7 +138,7 @@ def _benchmark(run, warmup_ms, rep_ms):
 
 
 def _select_kernel(
-    runtime, a, b, sfa, sfb, out, m, n, k, benchmark_runs
+    runtime, a, b, sfa, sfb, out, m, n, k, benchmark_runs=3
 ):
     if benchmark_runs < 1:
         raise ValueError("benchmark_runs must be positive")
@@ -182,8 +182,6 @@ def matmul_mxfp8(a, b, sfa, sfb):
     with torch.cuda.device(device_index):
         out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
         runtime = runtime_for(device_index)
-        spec = _select_kernel(
-            runtime, a, b, sfa, sfb, out, m, n, k, benchmark_runs=3
-        )
+        spec = _select_kernel(runtime, a, b, sfa, sfb, out, m, n, k)
         runtime.prepare(spec, a, b, sfa, sfb, out)()
         return out
