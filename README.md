@@ -1,7 +1,6 @@
 # MMC
 
-MMC is a small collection of GEMM-family kernels modeled as pipeline
-scheduling designs. The initial release provides autotuned MXFP8 GEMM for
+MMC is a small collection of GEMM-family kernels. The initial release provides autotuned MXFP8 GEMM for
 NVIDIA B200 GPUs.
 
 ```python
