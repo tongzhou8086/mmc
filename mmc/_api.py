@@ -1,6 +1,8 @@
 import json
 import os
+import random
 from pathlib import Path
+from statistics import median
 
 import torch
 from triton.testing import do_bench
@@ -135,7 +137,12 @@ def _benchmark(run, warmup_ms, rep_ms):
     return do_bench(run, warmup=warmup_ms, rep=rep_ms)
 
 
-def _select_kernel(runtime, a, b, sfa, sfb, out, m, n, k):
+def _select_kernel(
+    runtime, a, b, sfa, sfb, out, m, n, k, benchmark_runs
+):
+    if benchmark_runs < 1:
+        raise ValueError("benchmark_runs must be positive")
+
     cache = _read_cache()
     key = _cache_key(runtime, m, n, k)
     cached = cache.get(key)
@@ -143,11 +150,19 @@ def _select_kernel(runtime, a, b, sfa, sfb, out, m, n, k):
         return KERNEL_BY_NAME[cached]
 
     candidates = [spec for spec in KERNELS if k % spec.bk == 0]
-    timings = {}
-    for spec in candidates:
-        run = runtime.prepare(spec, a, b, sfa, sfb, out)
-        timings[spec.name] = _benchmark(run, warmup_ms=200, rep_ms=300)
-    winner = min(candidates, key=lambda spec: timings[spec.name])
+    timings = {spec.name: [] for spec in candidates}
+    for _ in range(benchmark_runs):
+        shuffled = candidates.copy()
+        random.shuffle(shuffled)
+        for spec in shuffled:
+            run = runtime.prepare(spec, a, b, sfa, sfb, out)
+            timing = _benchmark(run, warmup_ms=200, rep_ms=300)
+            timings[spec.name].append(timing)
+
+    median_timings = {
+        name: median(samples) for name, samples in timings.items()
+    }
+    winner = min(candidates, key=lambda spec: median_timings[spec.name])
     cache[key] = winner.name
     _write_cache(cache)
     return winner
@@ -167,6 +182,8 @@ def matmul_mxfp8(a, b, sfa, sfb):
     with torch.cuda.device(device_index):
         out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
         runtime = runtime_for(device_index)
-        spec = _select_kernel(runtime, a, b, sfa, sfb, out, m, n, k)
+        spec = _select_kernel(
+            runtime, a, b, sfa, sfb, out, m, n, k, benchmark_runs=3
+        )
         runtime.prepare(spec, a, b, sfa, sfb, out)()
         return out
