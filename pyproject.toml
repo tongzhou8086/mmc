@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmc"
+version = "0.1.0"
+description = "Readable, autotuned GEMM-family kernels for NVIDIA Blackwell GPUs"
+requires-python = ">=3.10"
+dependencies = [
+    "cuda-python",
+    "numpy",
+    "torch",
+]
+
+[tool.setuptools]
+packages = ["mmc"]
+
+[tool.setuptools.package-data]
+mmc = ["kernels/*.cu", "kernels/*.cubin"]

@@ -1,0 +1,40 @@
+import json
+from pathlib import Path
+
+import torch
+
+import mmc
+from mmc._api import E8M0_BIAS, _quantize_rows
+
+
+def _dequantize(values, scales):
+    exponent = scales.float() - E8M0_BIAS
+    return values.float() * torch.exp2(exponent).repeat_interleave(32, dim=-1)
+
+
+def test_quantize_and_matmul(tmp_path, monkeypatch):
+    monkeypatch.setenv("MMC_CACHE_DIR", str(tmp_path))
+    torch.manual_seed(0)
+    a = torch.randn((2048, 1024), dtype=torch.bfloat16, device="cuda")
+    b = torch.randn((1024, 2048), dtype=torch.bfloat16, device="cuda")
+
+    aq, bq, sfa, sfb = mmc.quantize_to_mxfp8(a, b)
+    out = mmc.matmul_mxfp8(aq, bq, sfa, sfb)
+
+    _, sfa_unpacked = _quantize_rows(a)
+    _, sfb_unpacked = _quantize_rows(b.t().contiguous())
+    reference = (
+        _dequantize(aq, sfa_unpacked)
+        @ _dequantize(bq, sfb_unpacked).t()
+    ).bfloat16()
+    error = (out.float() - reference.float()).abs().max()
+    assert error / reference.float().abs().max() < 0.05
+
+    cache_path = Path(tmp_path) / "autotune.json"
+    cache = json.loads(cache_path.read_text())
+    assert len(cache) == 1
+
+    previous = cache_path.stat().st_mtime_ns
+    mmc.matmul_mxfp8(aq, bq, sfa, sfb)
+    torch.cuda.synchronize()
+    assert cache_path.stat().st_mtime_ns == previous
