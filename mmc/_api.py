@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import torch
+from triton.testing import do_bench
 
 from ._kernels import (
     BM,
@@ -130,22 +131,13 @@ def _cache_key(runtime, m, n, k):
     )
 
 
-def _benchmark(run):
-    for _ in range(3):
-        run()
-    torch.cuda.synchronize()
-
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(20):
-        run()
-    end.record()
-    end.synchronize()
-    return start.elapsed_time(end) / 20
+def _benchmark(run, warmup_ms, rep_ms):
+    return do_bench(run, warmup=warmup_ms, rep=rep_ms)
 
 
-def _select_kernel(runtime, a, b, sfa, sfb, out, m, n, k):
+def _select_kernel(
+    runtime, a, b, sfa, sfb, out, m, n, k, warmup_ms, rep_ms
+):
     cache = _read_cache()
     key = _cache_key(runtime, m, n, k)
     cached = cache.get(key)
@@ -156,19 +148,24 @@ def _select_kernel(runtime, a, b, sfa, sfb, out, m, n, k):
     timings = {}
     for spec in candidates:
         run = runtime.prepare(spec, a, b, sfa, sfb, out)
-        timings[spec.name] = _benchmark(run)
+        timings[spec.name] = _benchmark(run, warmup_ms, rep_ms)
     winner = min(candidates, key=lambda spec: timings[spec.name])
     cache[key] = winner.name
     _write_cache(cache)
     return winner
 
 
-def matmul_mxfp8(a, b, sfa, sfb):
+def matmul_mxfp8(a, b, sfa, sfb, *, warmup_ms=200, rep_ms=300):
     """Compute C[M,N] from MMC's quantized A[M,K] and B[N,K].
 
     The first call for a shape benchmarks valid bundled kernels and stores the
     winner in ~/.cache/mmc/autotune.json. Later calls launch the cached winner.
+    Autotuning uses Triton's do_bench with 200 ms warmup and 300 ms measurement
+    by default.
     """
+    if warmup_ms <= 0 or rep_ms <= 0:
+        raise ValueError("warmup_ms and rep_ms must be positive")
+
     m, n, k = _validate_quantized(a, b, sfa, sfb)
     device_index = a.device.index
     if device_index is None:
@@ -176,6 +173,8 @@ def matmul_mxfp8(a, b, sfa, sfb):
     with torch.cuda.device(device_index):
         out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
         runtime = runtime_for(device_index)
-        spec = _select_kernel(runtime, a, b, sfa, sfb, out, m, n, k)
+        spec = _select_kernel(
+            runtime, a, b, sfa, sfb, out, m, n, k, warmup_ms, rep_ms
+        )
         runtime.prepare(spec, a, b, sfa, sfb, out)()
         return out
