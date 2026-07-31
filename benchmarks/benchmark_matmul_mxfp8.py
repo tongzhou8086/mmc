@@ -35,6 +35,7 @@ def benchmark_shape(m, n, k):
         lambda: mmc.matmul_mxfp8_out(aq, bq, sfa, sfb, out),
         warmup=1000,
         rep=3000,
+        return_mode="median",
     )
     tflops = 2 * m * n * k / latency_ms / 1e9
     return latency_ms, tflops
