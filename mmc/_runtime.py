@@ -212,7 +212,8 @@ class Runtime:
                 spec, a, b, sfa, sfb, out, stream
             )
 
-        launch_args = self._launch_cache[key][0]
+        # Keep the ctypes objects behind kernel_params from being garbage-collected.
+        launch_args, _argument_storage = self._launch_cache[key]
         _cu(driver.cuLaunchKernel(*launch_args))
 
 
