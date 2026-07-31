@@ -200,7 +200,7 @@ def _select_kernel(
             def run():
                 runtime.launch(spec, a, b, sfa, sfb, out)
 
-            timing = _benchmark(run, warmup_ms=200, rep_ms=300)
+            timing = _benchmark(run, warmup_ms=1000, rep_ms=500)
             timings[spec.name].append(timing)
 
     median_timings = {

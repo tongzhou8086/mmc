@@ -46,9 +46,8 @@ Current shape constraints are `M % 256 == 0`, `N % 256 == 0`, and
 ## Autotuning
 
 The first `matmul_mxfp8` call for a shape benchmarks all compatible bundled
-kernels with `triton.testing.do_bench`. Its warmup and measurement windows
-are internally fixed at 200 ms and 300 ms. MMC runs three independently
-shuffled benchmark passes and selects the kernel with the lowest median time.
+kernels with `triton.testing.do_bench`. MMC runs three independently shuffled
+benchmark passes and selects the kernel with the lowest median time.
 Pass `retune=True` to ignore a cached winner and repeat autotuning:
 
 ```python
