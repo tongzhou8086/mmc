@@ -14,6 +14,12 @@ Aq, Bq, SFA, SFB = mmc.quantize_to_mxfp8(A, B)
 C = mmc.matmul_mxfp8(Aq, Bq, SFA, SFB)
 ```
 
+If `B` is already stored as row-major `[N,K]`, pass `b_transposed=True`:
+
+```python
+Aq, Bq, SFA, SFB = mmc.quantize_to_mxfp8(A, B_t, b_transposed=True)
+```
+
 Use `matmul_mxfp8_out` to reuse an existing output allocation:
 
 ```python
@@ -23,8 +29,9 @@ mmc.matmul_mxfp8_out(Aq, Bq, SFA, SFB, C)
 
 ## Layout contract
 
-The public inputs use the conventional row-major layouts `A[M,K]` and
-`B[K,N]`. Quantization returns:
+The public quantizer input uses row-major `A[M,K]`. By default, it expects
+row-major `B[K,N]`; pass `b_transposed=True` when `B` is already row-major
+`[N,K]`. Quantization returns:
 
 - `Aq[M,K]`, row-major E4M3;
 - `Bq[N,K]`, transposed row-major E4M3 for the kernels' ABt convention;
