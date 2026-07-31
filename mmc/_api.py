@@ -172,22 +172,35 @@ def _select_kernel(
     return winner
 
 
-def matmul_mxfp8(a, b, sfa, sfb, retune=False):
-    """Compute C[M,N] from MMC's quantized A[M,K] and B[N,K].
+def matmul_mxfp8_out(a, b, sfa, sfb, out, retune=False):
+    """Compute into a reusable BF16 output tensor.
 
     The first call for a shape benchmarks valid bundled kernels and stores the
     winner in ~/.cache/mmc/autotune.json. Later calls launch the cached winner
     unless retune is True. Autotuning uses Triton's do_bench internally.
     """
     m, n, k = _validate_quantized(a, b, sfa, sfb)
+    if out.device != a.device:
+        raise ValueError("out must be on the same CUDA device as the inputs")
+    if out.dtype != torch.bfloat16:
+        raise TypeError("out must have dtype torch.bfloat16")
+    if tuple(out.shape) != (m, n) or not out.is_contiguous():
+        raise ValueError(f"out must be contiguous with shape {(m, n)}")
+
     device_index = a.device.index
     if device_index is None:
         device_index = torch.cuda.current_device()
     with torch.cuda.device(device_index):
-        out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
         runtime = runtime_for(device_index)
         spec = _select_kernel(
             runtime, a, b, sfa, sfb, out, m, n, k, retune=retune
         )
         runtime.prepare(spec, a, b, sfa, sfb, out)()
         return out
+
+
+def matmul_mxfp8(a, b, sfa, sfb, retune=False):
+    """Allocate and return C[M,N] for quantized A[M,K] and B[N,K]."""
+    m, n, _ = _validate_quantized(a, b, sfa, sfb)
+    out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
+    return matmul_mxfp8_out(a, b, sfa, sfb, out, retune=retune)

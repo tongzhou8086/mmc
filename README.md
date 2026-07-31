@@ -14,6 +14,13 @@ Aq, Bq, SFA, SFB = mmc.quantize_to_mxfp8(A, B)
 C = mmc.matmul_mxfp8(Aq, Bq, SFA, SFB)
 ```
 
+Use `matmul_mxfp8_out` to reuse an existing output allocation:
+
+```python
+C = torch.empty((8192, 8192), dtype=torch.bfloat16, device="cuda")
+mmc.matmul_mxfp8_out(Aq, Bq, SFA, SFB, C)
+```
+
 ## Layout contract
 
 The public inputs use the conventional row-major layouts `A[M,K]` and

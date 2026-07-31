@@ -22,6 +22,9 @@ def test_quantize_and_matmul(tmp_path, monkeypatch):
 
     aq, bq, sfa, sfb = mmc.quantize_to_mxfp8(a, b)
     out = mmc.matmul_mxfp8(aq, bq, sfa, sfb)
+    out_buffer = torch.empty_like(out)
+    returned = mmc.matmul_mxfp8_out(aq, bq, sfa, sfb, out_buffer)
+    assert returned is out_buffer
 
     _, sfa_unpacked = _quantize_rows(a)
     _, sfb_unpacked = _quantize_rows(b.t().contiguous())
@@ -29,8 +32,9 @@ def test_quantize_and_matmul(tmp_path, monkeypatch):
         _dequantize(aq, sfa_unpacked)
         @ _dequantize(bq, sfb_unpacked).t()
     ).bfloat16()
-    error = (out.float() - reference.float()).abs().max()
-    assert error / reference.float().abs().max() < 0.05
+    for result in (out, out_buffer):
+        error = (result.float() - reference.float()).abs().max()
+        assert error / reference.float().abs().max() < 0.05
 
     cache_path = Path(tmp_path) / "autotune.json"
     cache = json.loads(cache_path.read_text())
