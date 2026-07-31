@@ -157,7 +157,7 @@ class Runtime:
             self._functions[spec.name] = (module, function)
         return self._functions[spec.name][1]
 
-    def _cache_launch(self, key, spec, a, b, sfa, sfb, out, stream):
+    def _build_launch_args(self, spec, a, b, sfa, sfb, out, stream):
         m, k = a.shape
         n = b.shape[0]
         descriptors = (
@@ -188,8 +188,8 @@ class Runtime:
             kernel_params,
             0,
         )
-        # kernel_params contains addresses into argument_storage, so cache both.
-        self._launch_cache[key] = (launch_args, argument_storage)
+        # kernel_params contains addresses into argument_storage, so retain both.
+        return launch_args, argument_storage
 
     def launch(self, spec, a, b, sfa, sfb, out):
         m, k = a.shape
@@ -208,7 +208,9 @@ class Runtime:
             stream,
         )
         if key not in self._launch_cache:
-            self._cache_launch(key, spec, a, b, sfa, sfb, out, stream)
+            self._launch_cache[key] = self._build_launch_args(
+                spec, a, b, sfa, sfb, out, stream
+            )
 
         launch_args = self._launch_cache[key][0]
         _cu(driver.cuLaunchKernel(*launch_args))
