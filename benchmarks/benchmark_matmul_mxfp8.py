@@ -29,9 +29,10 @@ def benchmark_shape(m, n, k):
     b = torch.randn((k, n), dtype=torch.bfloat16, device="cuda")
     aq, bq, sfa, sfb = mmc.quantize_to_mxfp8(a, b)
 
-    mmc.matmul_mxfp8(aq, bq, sfa, sfb)
+    out = torch.empty((m, n), dtype=torch.bfloat16, device="cuda")
+    mmc.matmul_mxfp8_out(aq, bq, sfa, sfb, out)
     latency_ms = do_bench(
-        lambda: mmc.matmul_mxfp8(aq, bq, sfa, sfb),
+        lambda: mmc.matmul_mxfp8_out(aq, bq, sfa, sfb, out),
         warmup=1000,
         rep=3000,
     )
