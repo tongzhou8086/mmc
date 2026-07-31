@@ -55,6 +55,13 @@ Pass `retune=True` to ignore a cached winner and repeat autotuning:
 C = mmc.matmul_mxfp8(Aq, Bq, SFA, SFB, retune=True)
 ```
 
+Add `print_tuning=True` with `retune=True` to print the measured TFLOP/s for
+each compatible bundled kernel:
+
+```python
+C = mmc.matmul_mxfp8(Aq, Bq, SFA, SFB, retune=True, print_tuning=True)
+```
+
 The winner is stored in:
 
 ```text
