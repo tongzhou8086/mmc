@@ -45,28 +45,34 @@ def _pack_scales(scales):
     return packed.contiguous()
 
 
-def quantize_to_mxfp8(a, b):
-    """Quantize conventional row-major A[M,K] and B[K,N] for MMC.
+def quantize_to_mxfp8(a, b, b_transposed=False):
+    """Quantize row-major A[M,K] and B for MMC.
 
-    Returns Aq[M,K], Bq[N,K], packed SFA, and packed SFB. Bq is transposed
-    because Blackwell's ABt MXFP8 kernels consume B as row-major [N,K].
+    By default, B is conventional row-major [K,N]. Pass b_transposed=True
+    when B is already row-major [N,K].
+
+    Returns Aq[M,K], Bq[N,K], packed SFA, and packed SFB.
     """
     if a.ndim != 2 or b.ndim != 2:
         raise ValueError("A and B must be rank-2 tensors")
     if a.device.type != "cuda" or b.device != a.device:
         raise ValueError("A and B must be on the same CUDA device")
-    if a.shape[1] != b.shape[0]:
+    b_k = b.shape[1] if b_transposed else b.shape[0]
+    if a.shape[1] != b_k:
         raise ValueError(f"incompatible shapes: A{tuple(a.shape)}, B{tuple(b.shape)}")
     if not a.is_contiguous() or not b.is_contiguous():
         raise ValueError("A and B must be contiguous row-major tensors")
 
     m, k = a.shape
-    n = b.shape[1]
+    n = b.shape[0] if b_transposed else b.shape[1]
     if m % 256 or n % 256 or k % 128:
         raise ValueError("MMC currently requires M%256 == N%256 == 0 and K%128 == 0")
 
     aq, sfa = _quantize_rows(a)
-    bq, sfb = _quantize_rows(b.t().contiguous())
+    if b_transposed:
+        bq, sfb = _quantize_rows(b)
+    else:
+        bq, sfb = _quantize_rows(b.t().contiguous())
     return aq, bq, _pack_scales(sfa), _pack_scales(sfb)
 
 
