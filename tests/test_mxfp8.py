@@ -27,10 +27,10 @@ def test_quantize_and_matmul(tmp_path, monkeypatch):
     assert returned is out_buffer
 
     _, sfa_unpacked = _quantize_rows(a)
-    _, sfb_unpacked = _quantize_rows(b.t().contiguous())
+    bq_transposed, sfb_unpacked = _quantize_rows(b.t().contiguous())
     reference = (
         _dequantize(aq, sfa_unpacked)
-        @ _dequantize(bq, sfb_unpacked).t()
+        @ _dequantize(bq_transposed, sfb_unpacked).t()
     ).bfloat16()
     for result in (out, out_buffer):
         error = (result.float() - reference.float()).abs().max()
@@ -46,6 +46,30 @@ def test_quantize_and_matmul(tmp_path, monkeypatch):
     assert cache_path.stat().st_mtime_ns == previous
 
 
+def test_transposed_b_matches_default_layout(tmp_path, monkeypatch):
+    monkeypatch.setenv("MMC_CACHE_DIR", str(tmp_path))
+    torch.manual_seed(0)
+    a = torch.randn((2048, 1024), dtype=torch.bfloat16, device="cuda")
+    b = torch.randn((1024, 2048), dtype=torch.bfloat16, device="cuda")
+
+    aq, bq, sfa, sfb = mmc.quantize_to_mxfp8(a, b)
+    aq_t, bq_t, sfa_t, sfb_t = mmc.quantize_to_mxfp8(
+        a, b.t().contiguous(), b_transposed=True
+    )
+    assert torch.equal(aq, aq_t)
+    assert torch.equal(sfa, sfa_t)
+    assert torch.equal(bq.t(), bq_t)
+    assert torch.equal(sfb, sfb_t)
+
+    default_out = mmc.matmul_mxfp8(aq, bq, sfa, sfb)
+    out = torch.empty_like(default_out)
+    returned = mmc.matmul_mxfp8_out(
+        aq_t, bq_t, sfa_t, sfb_t, out, b_transposed=True
+    )
+    assert returned is out
+    torch.testing.assert_close(out, default_out)
+
+
 def test_retune_bypasses_cached_winner(tmp_path, monkeypatch):
     monkeypatch.setenv("MMC_CACHE_DIR", str(tmp_path))
     a = torch.randn((2048, 1024), dtype=torch.bfloat16, device="cuda")
@@ -53,7 +77,7 @@ def test_retune_bypasses_cached_winner(tmp_path, monkeypatch):
     aq, bq, sfa, sfb = mmc.quantize_to_mxfp8(a, b)
 
     m, k = aq.shape
-    n = bq.shape[0]
+    n = bq.shape[1]
     runtime = _api.runtime_for(torch.cuda.current_device())
     key = _api._cache_key(runtime, m, n, k)
     cache_path = Path(tmp_path) / "autotune.json"

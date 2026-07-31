@@ -23,15 +23,20 @@ mmc.matmul_mxfp8_out(Aq, Bq, SFA, SFB, C)
 
 ## Layout contract
 
-The public inputs use the conventional row-major layouts `A[M,K]` and
-`B[K,N]`. Quantization returns:
+By default, the public inputs use the conventional row-major layouts `A[M,K]`
+and `B[K,N]`. Quantization returns:
 
 - `Aq[M,K]`, row-major E4M3;
-- `Bq[N,K]`, transposed row-major E4M3 for the kernels' ABt convention;
+- `Bq[K,N]`, row-major E4M3;
 - `SFA[M/128,K/128,32,16]`, packed E8M0;
 - `SFB[N/128,K/128,32,16]`, packed E8M0.
 
 The result is row-major BF16 `C[M,N]`.
+
+For callers that already store B as row-major `B[N,K]` (the transposed
+operand), pass `b_transposed=True` to `quantize_to_mxfp8`, `matmul_mxfp8`,
+and `matmul_mxfp8_out`. This layout is consumed directly by the kernels and
+avoids the internal B transpose.
 
 Current shape constraints are `M % 256 == 0`, `N % 256 == 0`, and
 `K % 128 == 0`.

@@ -45,32 +45,37 @@ def _pack_scales(scales):
     return packed.contiguous()
 
 
-def quantize_to_mxfp8(a, b):
-    """Quantize conventional row-major A[M,K] and B[K,N] for MMC.
+def quantize_to_mxfp8(a, b, b_transposed=False):
+    """Quantize A[M,K] and B for MMC.
 
-    Returns Aq[M,K], Bq[N,K], packed SFA, and packed SFB. Bq is transposed
-    because Blackwell's ABt MXFP8 kernels consume B as row-major [N,K].
+    By default B is conventional row-major [K,N]. Pass b_transposed=True
+    when B is already row-major [N,K], representing the transposed operand.
+    The returned Bq uses the same layout as the supplied B. SFB is always
+    packed for the kernels' row-major [N,K] representation.
     """
     if a.ndim != 2 or b.ndim != 2:
         raise ValueError("A and B must be rank-2 tensors")
     if a.device.type != "cuda" or b.device != a.device:
         raise ValueError("A and B must be on the same CUDA device")
-    if a.shape[1] != b.shape[0]:
+    if a.shape[1] != b.shape[1 if b_transposed else 0]:
         raise ValueError(f"incompatible shapes: A{tuple(a.shape)}, B{tuple(b.shape)}")
     if not a.is_contiguous() or not b.is_contiguous():
         raise ValueError("A and B must be contiguous row-major tensors")
 
     m, k = a.shape
-    n = b.shape[1]
+    n = b.shape[0 if b_transposed else 1]
     if m % 256 or n % 256 or k % 128:
         raise ValueError("MMC currently requires M%256 == N%256 == 0 and K%128 == 0")
 
     aq, sfa = _quantize_rows(a)
-    bq, sfb = _quantize_rows(b.t().contiguous())
+    kernel_b = b if b_transposed else b.t().contiguous()
+    bq, sfb = _quantize_rows(kernel_b)
+    if not b_transposed:
+        bq = bq.t().contiguous()
     return aq, bq, _pack_scales(sfa), _pack_scales(sfb)
 
 
-def _validate_quantized(a, b, sfa, sfb):
+def _validate_quantized(a, b, sfa, sfb, b_transposed=False):
     if a.ndim != 2 or b.ndim != 2:
         raise ValueError("quantized A and B must be rank-2 tensors")
     if a.dtype != torch.float8_e4m3fn or b.dtype != torch.float8_e4m3fn:
@@ -81,7 +86,10 @@ def _validate_quantized(a, b, sfa, sfb):
         raise ValueError("A, B, SFA, and SFB must be contiguous")
 
     m, k = a.shape
-    n, b_k = b.shape
+    if b_transposed:
+        n, b_k = b.shape
+    else:
+        b_k, n = b.shape
     if b_k != k:
         raise ValueError(f"incompatible quantized shapes: A{tuple(a.shape)}, B{tuple(b.shape)}")
     if m % 256 or n % 256 or k % 128:
@@ -179,14 +187,17 @@ def _select_kernel(
     return winner
 
 
-def matmul_mxfp8_out(a, b, sfa, sfb, out, retune=False):
+def matmul_mxfp8_out(a, b, sfa, sfb, out, retune=False, b_transposed=False):
     """Compute into a reusable BF16 output tensor.
+
+    B is row-major [K,N] by default. Set b_transposed=True when B is already
+    row-major [N,K], the layout consumed directly by the bundled kernels.
 
     The first call for a shape benchmarks valid bundled kernels and stores the
     winner in ~/.cache/mmc/autotune.json. Later calls launch the cached winner
     unless retune is True. Autotuning uses Triton's do_bench internally.
     """
-    m, n, k = _validate_quantized(a, b, sfa, sfb)
+    m, n, k = _validate_quantized(a, b, sfa, sfb, b_transposed=b_transposed)
     if out.device != a.device:
         raise ValueError("out must be on the same CUDA device as the inputs")
     if out.dtype != torch.bfloat16:
@@ -198,16 +209,20 @@ def matmul_mxfp8_out(a, b, sfa, sfb, out, retune=False):
     if device_index is None:
         device_index = torch.cuda.current_device()
     with torch.cuda.device(device_index):
+        kernel_b = b if b_transposed else b.t().contiguous()
         runtime = runtime_for(device_index)
         spec = _select_kernel(
-            runtime, a, b, sfa, sfb, out, m, n, k, retune=retune
+            runtime, a, kernel_b, sfa, sfb, out, m, n, k, retune=retune
         )
-        runtime.launch(spec, a, b, sfa, sfb, out)
+        runtime.launch(spec, a, kernel_b, sfa, sfb, out)
         return out
 
 
-def matmul_mxfp8(a, b, sfa, sfb, retune=False):
-    """Allocate and return C[M,N] for quantized A[M,K] and B[N,K]."""
-    m, n = a.shape[0], b.shape[0]
+def matmul_mxfp8(a, b, sfa, sfb, retune=False, b_transposed=False):
+    """Allocate and return C[M,N] for A[M,K] and B[K,N] or B[N,K]."""
+    m = a.shape[0]
+    n = b.shape[0 if b_transposed else 1]
     out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
-    return matmul_mxfp8_out(a, b, sfa, sfb, out, retune=retune)
+    return matmul_mxfp8_out(
+        a, b, sfa, sfb, out, retune=retune, b_transposed=b_transposed
+    )
