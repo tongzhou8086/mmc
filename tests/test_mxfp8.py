@@ -4,7 +4,9 @@ from pathlib import Path
 import torch
 
 import mmc
+from mmc import _api
 from mmc._api import E8M0_BIAS, _quantize_rows
+from mmc._kernels import KERNELS
 
 
 def _dequantize(values, scales):
@@ -38,3 +40,32 @@ def test_quantize_and_matmul(tmp_path, monkeypatch):
     mmc.matmul_mxfp8(aq, bq, sfa, sfb)
     torch.cuda.synchronize()
     assert cache_path.stat().st_mtime_ns == previous
+
+
+def test_retune_bypasses_cached_winner(tmp_path, monkeypatch):
+    monkeypatch.setenv("MMC_CACHE_DIR", str(tmp_path))
+    a = torch.randn((2048, 1024), dtype=torch.bfloat16, device="cuda")
+    b = torch.randn((1024, 2048), dtype=torch.bfloat16, device="cuda")
+    aq, bq, sfa, sfb = mmc.quantize_to_mxfp8(a, b)
+
+    runtime = _api.runtime_for(torch.cuda.current_device())
+    key = _api._cache_key(runtime, 2048, 2048, 1024)
+    cache_path = Path(tmp_path) / "autotune.json"
+    cache_path.write_text(json.dumps({key: KERNELS[0].name}))
+
+    benchmark_calls = 0
+
+    def fake_benchmark(run, warmup_ms, rep_ms):
+        nonlocal benchmark_calls
+        benchmark_calls += 1
+        return 1.0
+
+    monkeypatch.setattr(_api, "_benchmark", fake_benchmark)
+
+    mmc.matmul_mxfp8(aq, bq, sfa, sfb)
+    assert benchmark_calls == 0
+
+    mmc.matmul_mxfp8(aq, bq, sfa, sfb, retune=True)
+    torch.cuda.synchronize()
+    compatible = [spec for spec in KERNELS if 1024 % spec.bk == 0]
+    assert benchmark_calls == 3 * len(compatible)

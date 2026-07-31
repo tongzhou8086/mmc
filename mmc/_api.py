@@ -138,7 +138,7 @@ def _benchmark(run, warmup_ms, rep_ms):
 
 
 def _select_kernel(
-    runtime, a, b, sfa, sfb, out, m, n, k, benchmark_runs=3
+    runtime, a, b, sfa, sfb, out, m, n, k, benchmark_runs=3, retune=False
 ):
     if benchmark_runs < 1:
         raise ValueError("benchmark_runs must be positive")
@@ -146,7 +146,11 @@ def _select_kernel(
     cache = _read_cache()
     key = _cache_key(runtime, m, n, k)
     cached = cache.get(key)
-    if cached in KERNEL_BY_NAME and k % KERNEL_BY_NAME[cached].bk == 0:
+    if (
+        not retune
+        and cached in KERNEL_BY_NAME
+        and k % KERNEL_BY_NAME[cached].bk == 0
+    ):
         return KERNEL_BY_NAME[cached]
 
     candidates = [spec for spec in KERNELS if k % spec.bk == 0]
@@ -168,12 +172,12 @@ def _select_kernel(
     return winner
 
 
-def matmul_mxfp8(a, b, sfa, sfb):
+def matmul_mxfp8(a, b, sfa, sfb, retune=False):
     """Compute C[M,N] from MMC's quantized A[M,K] and B[N,K].
 
     The first call for a shape benchmarks valid bundled kernels and stores the
-    winner in ~/.cache/mmc/autotune.json. Later calls launch the cached winner.
-    Autotuning uses Triton's do_bench internally.
+    winner in ~/.cache/mmc/autotune.json. Later calls launch the cached winner
+    unless retune is True. Autotuning uses Triton's do_bench internally.
     """
     m, n, k = _validate_quantized(a, b, sfa, sfb)
     device_index = a.device.index
@@ -182,6 +186,8 @@ def matmul_mxfp8(a, b, sfa, sfb):
     with torch.cuda.device(device_index):
         out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
         runtime = runtime_for(device_index)
-        spec = _select_kernel(runtime, a, b, sfa, sfb, out, m, n, k)
+        spec = _select_kernel(
+            runtime, a, b, sfa, sfb, out, m, n, k, retune=retune
+        )
         runtime.prepare(spec, a, b, sfa, sfb, out)()
         return out
