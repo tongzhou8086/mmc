@@ -159,7 +159,9 @@ def _select_kernel(
         shuffled = candidates.copy()
         random.shuffle(shuffled)
         for spec in shuffled:
-            run = runtime.prepare(spec, a, b, sfa, sfb, out)
+            def run():
+                runtime.launch(spec, a, b, sfa, sfb, out)
+
             timing = _benchmark(run, warmup_ms=200, rep_ms=300)
             timings[spec.name].append(timing)
 
@@ -195,7 +197,7 @@ def matmul_mxfp8_out(a, b, sfa, sfb, out, retune=False):
         spec = _select_kernel(
             runtime, a, b, sfa, sfb, out, m, n, k, retune=retune
         )
-        runtime.prepare(spec, a, b, sfa, sfb, out)()
+        runtime.launch(spec, a, b, sfa, sfb, out)
         return out
 
 

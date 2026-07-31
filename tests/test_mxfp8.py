@@ -26,6 +26,12 @@ def test_quantize_and_matmul(tmp_path, monkeypatch):
     returned = mmc.matmul_mxfp8_out(aq, bq, sfa, sfb, out_buffer)
     assert returned is out_buffer
 
+    runtime = _api.runtime_for(torch.cuda.current_device())
+    cached_launches = len(runtime._launch_cache)
+    mmc.matmul_mxfp8_out(aq, bq, sfa, sfb, out_buffer)
+    torch.cuda.synchronize()
+    assert len(runtime._launch_cache) == cached_launches
+
     _, sfa_unpacked = _quantize_rows(a)
     _, sfb_unpacked = _quantize_rows(b.t().contiguous())
     reference = (

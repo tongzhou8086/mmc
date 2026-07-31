@@ -142,6 +142,7 @@ class Runtime:
         ))
         self.driver_version = _cu(driver.cuDriverGetVersion())
         self._functions = {}
+        self._launch_cache = {}
 
     def _function(self, spec):
         if spec.name not in self._functions:
@@ -156,7 +157,7 @@ class Runtime:
             self._functions[spec.name] = (module, function)
         return self._functions[spec.name][1]
 
-    def prepare(self, spec, a, b, sfa, sfb, out):
+    def _cache_launch(self, key, spec, a, b, sfa, sfb, out, stream):
         m, k = a.shape
         n = b.shape[0]
         descriptors = (
@@ -166,33 +167,52 @@ class Runtime:
             _scale_map(sfb, n // BN_LOCAL, k // 128),
             _value_map(out, m, n, BM, STORE_N, 2, TMA_BFLOAT16),
         )
-        args = [_by_value(descriptor) for descriptor in descriptors]
-        args.extend([
+        argument_storage = [_by_value(descriptor) for descriptor in descriptors]
+        argument_storage.extend([
             ctypes.c_void_p(out.data_ptr()),
             ctypes.c_int(m),
             ctypes.c_int(n),
             ctypes.c_int(k),
         ])
+        kernel_params = (ctypes.c_void_p * len(argument_storage))(
+            *[ctypes.addressof(arg) for arg in argument_storage]
+        )
         grid = self.sm_count - self.sm_count % 2
         function = self._function(spec)
+        launch_args = (
+            function,
+            grid, 1, 1,
+            spec.threads, 1, 1,
+            spec.shared_bytes,
+            stream,
+            kernel_params,
+            0,
+        )
+        # kernel_params contains addresses into argument_storage, so cache both.
+        self._launch_cache[key] = (launch_args, argument_storage)
 
-        def run():
-            _cu(driver.cuCtxSetCurrent(self.context))
-            pointers = (ctypes.c_void_p * len(args))(
-                *[ctypes.addressof(arg) for arg in args]
-            )
-            stream = torch.cuda.current_stream(self.device_index).cuda_stream
-            _cu(driver.cuLaunchKernel(
-                function,
-                grid, 1, 1,
-                spec.threads, 1, 1,
-                spec.shared_bytes,
-                stream,
-                pointers,
-                0,
-            ))
+    def launch(self, spec, a, b, sfa, sfb, out):
+        _cu(driver.cuCtxSetCurrent(self.context))
+        m, k = a.shape
+        n = b.shape[0]
+        stream = torch.cuda.current_stream(self.device_index).cuda_stream
+        key = (
+            spec.name,
+            a.data_ptr(),
+            b.data_ptr(),
+            sfa.data_ptr(),
+            sfb.data_ptr(),
+            out.data_ptr(),
+            m,
+            n,
+            k,
+            stream,
+        )
+        if key not in self._launch_cache:
+            self._cache_launch(key, spec, a, b, sfa, sfb, out, stream)
 
-        return run
+        launch_args = self._launch_cache[key][0]
+        _cu(driver.cuLaunchKernel(*launch_args))
 
 
 _RUNTIMES = {}
