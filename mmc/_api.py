@@ -201,6 +201,6 @@ def matmul_mxfp8_out(a, b, sfa, sfb, out, retune=False):
 
 def matmul_mxfp8(a, b, sfa, sfb, retune=False):
     """Allocate and return C[M,N] for quantized A[M,K] and B[N,K]."""
-    m, n, _ = _validate_quantized(a, b, sfa, sfb)
+    m, n = a.shape[0], b.shape[0]
     out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
     return matmul_mxfp8_out(a, b, sfa, sfb, out, retune=retune)
