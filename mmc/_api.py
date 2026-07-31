@@ -134,7 +134,12 @@ def _cache_key(runtime, m, n, k):
 
 
 def _benchmark(run, warmup_ms, rep_ms):
-    return do_bench(run, warmup=warmup_ms, rep=rep_ms)
+    return do_bench(
+        run,
+        warmup=warmup_ms,
+        rep=rep_ms,
+        return_mode="median",
+    )
 
 
 def _select_kernel(
