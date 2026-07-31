@@ -192,7 +192,6 @@ class Runtime:
         self._launch_cache[key] = (launch_args, argument_storage)
 
     def launch(self, spec, a, b, sfa, sfb, out):
-        _cu(driver.cuCtxSetCurrent(self.context))
         m, k = a.shape
         n = b.shape[0]
         stream = torch.cuda.current_stream(self.device_index).cuda_stream
