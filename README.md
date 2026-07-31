@@ -61,6 +61,12 @@ each compatible bundled kernel:
 C = mmc.matmul_mxfp8(Aq, Bq, SFA, SFB, retune=True, print_tuning=True)
 ```
 
+To inspect tuning results from the command line:
+
+```bash
+python benchmarks/tune_matmul_mxfp8.py 4096 8192x8192x8192
+```
+
 The winner is stored in:
 
 ```text
