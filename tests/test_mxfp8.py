@@ -48,8 +48,10 @@ def test_retune_bypasses_cached_winner(tmp_path, monkeypatch):
     b = torch.randn((1024, 2048), dtype=torch.bfloat16, device="cuda")
     aq, bq, sfa, sfb = mmc.quantize_to_mxfp8(a, b)
 
+    m, k = aq.shape
+    n = bq.shape[0]
     runtime = _api.runtime_for(torch.cuda.current_device())
-    key = _api._cache_key(runtime, 2048, 2048, 1024)
+    key = _api._cache_key(runtime, m, n, k)
     cache_path = Path(tmp_path) / "autotune.json"
     cache_path.write_text(json.dumps({key: KERNELS[0].name}))
 
@@ -67,5 +69,5 @@ def test_retune_bypasses_cached_winner(tmp_path, monkeypatch):
 
     mmc.matmul_mxfp8(aq, bq, sfa, sfb, retune=True)
     torch.cuda.synchronize()
-    compatible = [spec for spec in KERNELS if 1024 % spec.bk == 0]
+    compatible = [spec for spec in KERNELS if k % spec.bk == 0]
     assert benchmark_calls == 3 * len(compatible)
