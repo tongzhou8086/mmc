@@ -24,10 +24,15 @@ def parse_shape(value):
     return shape
 
 
-def benchmark_shape(m, n, k):
+def benchmark_shape(m, n, k, b_transposed=False):
     a = torch.randn((m, k), dtype=torch.bfloat16, device="cuda")
-    b = torch.randn((k, n), dtype=torch.bfloat16, device="cuda")
-    aq, bq, sfa, sfb = mmc.quantize_to_mxfp8(a, b)
+    if b_transposed:
+        b = torch.randn((n, k), dtype=torch.bfloat16, device="cuda")
+    else:
+        b = torch.randn((k, n), dtype=torch.bfloat16, device="cuda")
+    aq, bq, sfa, sfb = mmc.quantize_to_mxfp8(
+        a, b, b_transposed=b_transposed
+    )
 
     out = torch.empty((m, n), dtype=torch.bfloat16, device="cuda")
     mmc.matmul_mxfp8_out(aq, bq, sfa, sfb, out)
@@ -52,11 +57,18 @@ def main():
         metavar="SHAPE",
         help="N for a square GEMM, or MxNxK",
     )
+    parser.add_argument(
+        "--b-transposed",
+        action="store_true",
+        help="allocate raw B as row-major [N,K] and pass b_transposed=True",
+    )
     args = parser.parse_args()
 
     print(f"{'M':>8} {'N':>8} {'K':>8} {'ms':>10} {'TFLOP/s':>12}")
     for m, n, k in args.shapes:
-        latency_ms, tflops = benchmark_shape(m, n, k)
+        latency_ms, tflops = benchmark_shape(
+            m, n, k, b_transposed=args.b_transposed
+        )
         print(f"{m:8d} {n:8d} {k:8d} {latency_ms:10.4f} {tflops:12.2f}")
 
 
