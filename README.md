@@ -78,7 +78,7 @@ shape, GPU properties, CUDA driver version, and kernel-set version.
 
 ## Binary distribution
 
-SM100a cubins are included in the Python package. Runtime execution requires:
+SM100a binary artifacts are included in the Python package. Runtime execution requires:
 
 - an NVIDIA B200 GPU;
 - an installed CUDA driver;

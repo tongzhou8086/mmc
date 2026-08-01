@@ -11,8 +11,9 @@ STORE_N = 64
 class KernelSpec:
     name: str
     bk: int
-    threads: int
-    shared_bytes: int
+    threads: int = 0
+    shared_bytes: int = 0
+    backend: str = "cuda"
 
 
 # These are the eight retained candidates from mxfp8-gemm-study/autotune.
@@ -25,7 +26,8 @@ KERNELS = (
     KernelSpec("double-ns3-store1-bk256", 256, 256, 226304),
     KernelSpec("double-ns6-store1-bk128-load128", 128, 256, 226304),
     KernelSpec("double-ns3-store1-bk256-load128", 256, 256, 226304),
+    KernelSpec("tk-4096", 128, backend="tk"),
 )
 
 KERNEL_BY_NAME = {kernel.name: kernel for kernel in KERNELS}
-KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v1"
+KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v2"
