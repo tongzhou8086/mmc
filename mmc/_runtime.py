@@ -143,6 +143,8 @@ class Runtime:
         self.driver_version = _cu(driver.cuDriverGetVersion())
         self._functions = {}
         self._launch_cache = {}
+        self._tk_functions = {}
+        self._tk_launch_cache = {}
 
     def _function(self, spec):
         if spec.name not in self._functions:
@@ -156,6 +158,75 @@ class Runtime:
             ))
             self._functions[spec.name] = (module, function)
         return self._functions[spec.name][1]
+
+    def _tk_function(self, spec):
+        if spec.name not in self._tk_functions:
+            path = Path(__file__).with_name("cubins") / f"{spec.name}.so"
+            library = ctypes.CDLL(str(path), mode=ctypes.RTLD_GLOBAL)
+            suffix = spec.name.removeprefix("tk-")
+
+            create_fn = getattr(library, f"tk_create_{suffix}")
+            create_fn.restype = ctypes.c_void_p
+            create_fn.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_size_t] * 3
+
+            launch_fn = getattr(library, f"tk_launch_{suffix}")
+            launch_fn.restype = ctypes.c_int
+            launch_fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+            destroy_fn = getattr(library, f"tk_destroy_{suffix}")
+            destroy_fn.restype = None
+            destroy_fn.argtypes = [ctypes.c_void_p]
+
+            self._tk_functions[spec.name] = (
+                library,
+                create_fn,
+                launch_fn,
+                destroy_fn,
+            )
+        return self._tk_functions[spec.name]
+
+    def _build_tk_launch_args(self, spec, a, b, sfa, sfb, out):
+        _, create_fn, launch_fn, destroy_fn = self._tk_function(spec)
+        m, k = a.shape
+        n = b.shape[0]
+        launch_state = create_fn(
+            ctypes.c_void_p(a.data_ptr()),
+            ctypes.c_void_p(sfa.data_ptr()),
+            ctypes.c_void_p(b.data_ptr()),
+            ctypes.c_void_p(sfb.data_ptr()),
+            ctypes.c_void_p(out.data_ptr()),
+            ctypes.c_size_t(m),
+            ctypes.c_size_t(n),
+            ctypes.c_size_t(k),
+        )
+        if not launch_state:
+            raise RuntimeError(f"{spec.name}: failed to create TK launch state")
+        return ctypes.c_void_p(launch_state), launch_fn, destroy_fn
+
+    def _launch_tk(self, spec, a, b, sfa, sfb, out):
+        m, k = a.shape
+        n = b.shape[0]
+        key = (
+            spec.name,
+            a.data_ptr(),
+            b.data_ptr(),
+            sfa.data_ptr(),
+            sfb.data_ptr(),
+            out.data_ptr(),
+            m,
+            n,
+            k,
+        )
+        if key not in self._tk_launch_cache:
+            self._tk_launch_cache[key] = self._build_tk_launch_args(
+                spec, a, b, sfa, sfb, out
+            )
+
+        launch_state, launch_fn, _destroy_fn = self._tk_launch_cache[key]
+        stream = torch.cuda.current_stream(self.device_index).cuda_stream
+        error = launch_fn(launch_state, ctypes.c_void_p(stream))
+        if error:
+            raise RuntimeError(f"{spec.name}: cudaLaunchKernelEx failed: cudaError={error}")
 
     def _build_launch_args(self, spec, a, b, sfa, sfb, out, stream):
         m, k = a.shape
@@ -192,6 +263,10 @@ class Runtime:
         return launch_args, argument_storage
 
     def launch(self, spec, a, b, sfa, sfb, out):
+        if spec.backend == "tk":
+            self._launch_tk(spec, a, b, sfa, sfb, out)
+            return
+
         m, k = a.shape
         n = b.shape[0]
         stream = torch.cuda.current_stream(self.device_index).cuda_stream

@@ -18,4 +18,4 @@ dependencies = [
 packages = ["mmc"]
 
 [tool.setuptools.package-data]
-mmc = ["kernels/*.cu", "cubins/*.cubin"]
+mmc = ["kernels/*.cu", "cubins/*.cubin", "cubins/*.so"]
