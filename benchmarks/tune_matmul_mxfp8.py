@@ -23,7 +23,7 @@ def parse_shape(value):
     return shape
 
 
-def tune_shape(m, n, k, b_transposed=False):
+def tune_shape(m, n, k, b_transposed=False, tuning_window=1):
     a = torch.randn((m, k), dtype=torch.bfloat16, device="cuda")
     if b_transposed:
         b = torch.randn((n, k), dtype=torch.bfloat16, device="cuda")
@@ -42,6 +42,7 @@ def tune_shape(m, n, k, b_transposed=False):
         out,
         retune=True,
         print_tuning=True,
+        tuning_window=tuning_window,
     )
     torch.cuda.synchronize()
 
@@ -62,12 +63,25 @@ def main():
         action="store_true",
         help="allocate raw B as row-major [N,K] and pass b_transposed=True",
     )
+    parser.add_argument(
+        "--tuning-window",
+        type=int,
+        choices=(1, 2, 3),
+        default=1,
+        help="autotuning window: 1=500/500 ms, 2=1000/1000 ms, 3=1000/2000 ms",
+    )
     args = parser.parse_args()
 
     for index, (m, n, k) in enumerate(args.shapes):
         if index:
             print()
-        tune_shape(m, n, k, b_transposed=args.b_transposed)
+        tune_shape(
+            m,
+            n,
+            k,
+            b_transposed=args.b_transposed,
+            tuning_window=args.tuning_window,
+        )
 
 
 if __name__ == "__main__":

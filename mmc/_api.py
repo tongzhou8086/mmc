@@ -19,6 +19,11 @@ from ._runtime import runtime_for
 
 MXFP8_MAX = 448.0
 E8M0_BIAS = 127.0
+TUNING_WINDOWS = {
+    1: (500, 500),
+    2: (1000, 1000),
+    3: (1000, 2000),
+}
 
 
 def _quantize_rows(tensor):
@@ -148,6 +153,13 @@ def _benchmark(run, warmup_ms, rep_ms):
     )
 
 
+def _tuning_window_ms(tuning_window):
+    try:
+        return TUNING_WINDOWS[tuning_window]
+    except (KeyError, TypeError) as error:
+        raise ValueError("tuning_window must be 1, 2, or 3") from error
+
+
 def _print_tuning_results(median_timings, m, n, k):
     rows = sorted(
         (
@@ -177,9 +189,11 @@ def _select_kernel(
     benchmark_runs=3,
     retune=False,
     print_tuning=False,
+    tuning_window=1,
 ):
     if benchmark_runs < 1:
         raise ValueError("benchmark_runs must be positive")
+    warmup_ms, rep_ms = _tuning_window_ms(tuning_window)
 
     cache = _read_cache()
     key = _cache_key(runtime, m, n, k)
@@ -200,7 +214,7 @@ def _select_kernel(
             def run():
                 runtime.launch(spec, a, b, sfa, sfb, out)
 
-            timing = _benchmark(run, warmup_ms=1000, rep_ms=500)
+            timing = _benchmark(run, warmup_ms=warmup_ms, rep_ms=rep_ms)
             timings[spec.name].append(timing)
 
     median_timings = {
@@ -214,13 +228,23 @@ def _select_kernel(
     return winner
 
 
-def matmul_mxfp8_out(a, b, sfa, sfb, out, retune=False, print_tuning=False):
+def matmul_mxfp8_out(
+    a,
+    b,
+    sfa,
+    sfb,
+    out,
+    retune=False,
+    print_tuning=False,
+    tuning_window=1,
+):
     """Compute into a reusable BF16 output tensor.
 
     The first call for a shape benchmarks valid bundled kernels and stores the
     winner in ~/.cache/mmc/autotune.json. Later calls launch the cached winner
     unless retune is True. Autotuning uses Triton's do_bench internally. Pass
     retune=True and print_tuning=True to print per-kernel tuning TFLOP/s.
+    tuning_window selects 500/500, 1000/1000, or 1000/2000 ms windows.
     """
     m, n, k = _validate_quantized(a, b, sfa, sfb)
     if out.device != a.device:
@@ -247,12 +271,21 @@ def matmul_mxfp8_out(a, b, sfa, sfb, out, retune=False, print_tuning=False):
             k,
             retune=retune,
             print_tuning=print_tuning,
+            tuning_window=tuning_window,
         )
         runtime.launch(spec, a, b, sfa, sfb, out)
         return out
 
 
-def matmul_mxfp8(a, b, sfa, sfb, retune=False, print_tuning=False):
+def matmul_mxfp8(
+    a,
+    b,
+    sfa,
+    sfb,
+    retune=False,
+    print_tuning=False,
+    tuning_window=1,
+):
     """Allocate and return C[M,N] for quantized A[M,K] and B[N,K]."""
     m, n = a.shape[0], b.shape[0]
     out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
@@ -264,4 +297,5 @@ def matmul_mxfp8(a, b, sfa, sfb, retune=False, print_tuning=False):
         out,
         retune=retune,
         print_tuning=print_tuning,
+        tuning_window=tuning_window,
     )
