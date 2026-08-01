@@ -146,7 +146,7 @@ class Runtime:
 
     def _function(self, spec):
         if spec.name not in self._functions:
-            path = Path(__file__).with_name("kernels") / f"{spec.name}.cubin"
+            path = Path(__file__).with_name("cubins") / f"{spec.name}.cubin"
             module = _cu(driver.cuModuleLoadData(path.read_bytes()))
             function = _cu(driver.cuModuleGetFunction(module, b"matmul_cluster"))
             _cu(driver.cuFuncSetAttribute(
