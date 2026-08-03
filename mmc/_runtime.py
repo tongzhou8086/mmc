@@ -231,10 +231,15 @@ class Runtime:
     def _build_launch_args(self, spec, a, b, sfa, sfb, out, stream):
         m, k = a.shape
         n = b.shape[0]
+        b_maps = [_value_map(b, n, k, BN_LOCAL, spec.bk, 1, TMA_UINT8)]
+        if spec.bn_local_tail:
+            b_maps.append(
+                _value_map(b, n, k, spec.bn_local_tail, spec.bk, 1, TMA_UINT8)
+            )
         descriptors = (
             _value_map(a, m, k, BM, spec.bk, 1, TMA_UINT8),
             _scale_map(sfa, m // BM, k // 128),
-            _value_map(b, n, k, BN_LOCAL, spec.bk, 1, TMA_UINT8),
+            *b_maps,
             _scale_map(sfb, n // BN_LOCAL, k // 128),
             _value_map(out, m, n, BM, STORE_N, 2, TMA_BFLOAT16),
         )
