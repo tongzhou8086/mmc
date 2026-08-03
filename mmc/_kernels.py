@@ -43,6 +43,17 @@ KERNELS = (
     KernelSpec("double-ns3-store1-bk256-load128-gsm8", 256, 256, 226304),
     KernelSpec("double-ns3-store1-bk256-load128-gsm12", 256, 256, 226304),
     KernelSpec("double-ns3-store1-bk256-load128", 256, 256, 226304),
+    # `-splitbar` variants replace the single per-slot data-ready barrier with
+    # separate scale-ready and operand-ready barriers, so the MMA warp copies
+    # the scale atoms into TMEM without waiting for the operand tiles.
+    KernelSpec("single-ns5-store3-bk128-load256-splitbar", 128, 384, 224768),
+    KernelSpec("single-ns6-store1-bk128-load256-splitbar", 128, 384, 226304),
+    KernelSpec("single-ns3-store1-bk256-load256-splitbar", 256, 384, 226304),
+    KernelSpec("double-ns5-store3-bk128-splitbar", 128, 256, 224768),
+    KernelSpec("double-ns6-store1-bk128-splitbar", 128, 256, 226304),
+    KernelSpec("double-ns3-store1-bk256-splitbar", 256, 256, 226304),
+    KernelSpec("double-ns6-store1-bk128-load128-splitbar", 128, 256, 226304),
+    KernelSpec("double-ns3-store1-bk256-load128-splitbar", 256, 256, 226304),
     KernelSpec("tk-1024", 128, backend="tk"),
     KernelSpec("tk-2048", 128, backend="tk"),
     KernelSpec("tk-4096", 128, backend="tk"),
@@ -51,4 +62,4 @@ KERNELS = (
 )
 
 KERNEL_BY_NAME = {kernel.name: kernel for kernel in KERNELS}
-KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v4"
+KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v5"
