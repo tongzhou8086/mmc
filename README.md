@@ -84,8 +84,14 @@ SM100a binary artifacts are included in the Python package. Runtime execution re
 - an installed CUDA driver;
 - PyTorch, NumPy, and cuda-python.
 
-NVCC and the CUDA toolkit are not required. The corresponding `.cu` sources
-are included for review but are never compiled at runtime.
+NVCC and the CUDA toolkit are not required. The corresponding `.cu` sources and
+their `.cuh` header are included for review but are never compiled at runtime.
+
+The CUDA kernel sources share `mmc/kernels/cuda-mxfp8.cuh`, which holds the
+SMEM/TMEM tile descriptors, tcgen05 fences and TMEM loads, mbarrier and cluster
+primitives, the 128B-swizzled TMA load/store wrappers, and the MXFP8 scale-atom
+and MMA helpers. Each kernel `.cu` keeps only its own tile shape, pipeline
+constants, MMA schedule and kernel body.
 
 Install locally with:
 
