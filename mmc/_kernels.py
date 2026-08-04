@@ -41,6 +41,15 @@ KERNELS = (
         "single-ns4-store3-bk128-bn384-earlysc", 128, 384, 224768,
         bn_local_tail=64,
     ),
+    # `-splitacc2` uses one accumulator-free barrier per MMA N group, with the
+    # epilogue's register loads aligned to those groups (128 columns then 256),
+    # so each group's accumulator columns are released before any of that
+    # group's SMEM staging or TMA stores and the next output tile's MMA for that
+    # group overlaps all of it.
+    KernelSpec(
+        "single-ns4-store3-bk128-bn384-splitacc2", 128, 384, 224768,
+        bn_local_tail=64,
+    ),
     KernelSpec("double-ns5-store3-bk128", 128, 256, 224768),
     KernelSpec("double-ns6-store1-bk128", 128, 256, 226304),
     KernelSpec("double-ns3-store1-bk256", 256, 256, 226304),
@@ -54,4 +63,4 @@ KERNELS = (
 )
 
 KERNEL_BY_NAME = {kernel.name: kernel for kernel in KERNELS}
-KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v5"
+KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
