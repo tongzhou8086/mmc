@@ -48,6 +48,13 @@ KERNELS = (
         "single-ns4-store3-bk128-bn384-splitacc", 128, 384, 224768,
         bn_local_tail=64,
     ),
+    # `-splitacc2` goes further: the register loads are aligned with the MMA N
+    # groups (128 columns then 256), so each group's accumulator columns are
+    # released before any of that group's SMEM staging or TMA stores.
+    KernelSpec(
+        "single-ns4-store3-bk128-bn384-splitacc2", 128, 384, 224768,
+        bn_local_tail=64,
+    ),
     KernelSpec("double-ns5-store3-bk128", 128, 256, 224768),
     KernelSpec("double-ns6-store1-bk128", 128, 256, 226304),
     KernelSpec("double-ns3-store1-bk256", 256, 256, 226304),
