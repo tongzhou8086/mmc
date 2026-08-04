@@ -8,11 +8,14 @@ import torch
 from triton.testing import do_bench
 
 from ._kernels import (
+    BF16_KERNEL_BY_NAME,
+    BF16_KERNEL_SET_VERSION,
+    BF16_KERNELS,
     BM,
     BN,
-    KERNEL_BY_NAME,
-    KERNEL_SET_VERSION,
-    KERNELS,
+    MXFP8_KERNEL_BY_NAME,
+    MXFP8_KERNEL_SET_VERSION,
+    MXFP8_KERNELS,
 )
 from ._runtime import runtime_for
 
@@ -106,6 +109,24 @@ def _validate_quantized(a, b, sfa, sfb):
     return m, n, k
 
 
+def _validate_bf16(a, b):
+    """Check BF16 operands and return (M, N, K) for A[M,K] @ B[K,N]."""
+    if a.ndim != 2 or b.ndim != 2:
+        raise ValueError("A and B must be rank-2 tensors")
+    if a.dtype != torch.bfloat16 or b.dtype != torch.bfloat16:
+        raise TypeError("A and B must have dtype torch.bfloat16")
+    if a.device.type != "cuda" or b.device != a.device:
+        raise ValueError("A and B must be on the same CUDA device")
+    if not a.is_contiguous() or not b.is_contiguous():
+        raise ValueError("A and B must be contiguous")
+
+    m, k = a.shape
+    b_k, n = b.shape
+    if b_k != k:
+        raise ValueError(f"incompatible shapes: A{tuple(a.shape)}, B{tuple(b.shape)}")
+    return m, n, k
+
+
 def _cache_path():
     root = Path(os.environ.get("MMC_CACHE_DIR", Path.home() / ".cache" / "mmc"))
     return root / "autotune.json"
@@ -126,7 +147,7 @@ def _write_cache(cache):
     temporary.replace(path)
 
 
-def _cache_key(runtime, m, n, k):
+def _cache_key(runtime, kernel_set_version, m, n, k):
     properties = torch.cuda.get_device_properties(runtime.device_index)
     machine = {
         "name": properties.name,
@@ -136,7 +157,7 @@ def _cache_key(runtime, m, n, k):
     }
     return json.dumps(
         {
-            "kernels": KERNEL_SET_VERSION,
+            "kernels": kernel_set_version,
             "machine": machine,
             "shape": [m, n, k],
         },
@@ -178,11 +199,11 @@ def _print_tuning_results(median_timings, m, n, k):
 
 def _select_kernel(
     runtime,
-    a,
-    b,
-    sfa,
-    sfb,
-    out,
+    kernels,
+    kernel_by_name,
+    dtype,
+    kernel_set_version,
+    make_run,
     m,
     n,
     k,
@@ -191,30 +212,39 @@ def _select_kernel(
     print_tuning=False,
     tuning_window=1,
 ):
+    """Return the fastest compatible spec for a shape, caching the winner.
+
+    Data-type agnostic: the caller supplies its own candidate set and a
+    make_run(spec) factory returning a no-argument callable that launches that
+    spec on the caller's operands. Each data type has its own kernel-set version
+    and the cache key carries it, so the MXFP8 and BF16 winners for one shape
+    never collide. dtype is used only in error messages.
+    """
     if benchmark_runs < 1:
         raise ValueError("benchmark_runs must be positive")
     warmup_ms, rep_ms = _tuning_window_ms(tuning_window)
 
     cache = _read_cache()
-    key = _cache_key(runtime, m, n, k)
+    key = _cache_key(runtime, kernel_set_version, m, n, k)
     cached = cache.get(key)
     if (
         not retune
-        and cached in KERNEL_BY_NAME
-        and k % KERNEL_BY_NAME[cached].bk == 0
+        and cached in kernel_by_name
+        and k % kernel_by_name[cached].bk == 0
     ):
-        return KERNEL_BY_NAME[cached]
+        return kernel_by_name[cached]
 
-    candidates = [spec for spec in KERNELS if k % spec.bk == 0]
+    candidates = [spec for spec in kernels if k % spec.bk == 0]
+    if not candidates:
+        raise ValueError(f"no bundled {dtype} kernel is compatible with K={k}")
     timings = {spec.name: [] for spec in candidates}
     for _ in range(benchmark_runs):
         shuffled = candidates.copy()
         random.shuffle(shuffled)
         for spec in shuffled:
-            def run():
-                runtime.launch(spec, a, b, sfa, sfb, out)
-
-            timing = _benchmark(run, warmup_ms=warmup_ms, rep_ms=rep_ms)
+            timing = _benchmark(
+                make_run(spec), warmup_ms=warmup_ms, rep_ms=rep_ms
+            )
             timings[spec.name].append(timing)
 
     median_timings = {
@@ -226,6 +256,42 @@ def _select_kernel(
     cache[key] = winner.name
     _write_cache(cache)
     return winner
+
+
+def _select_mxfp8_kernel(runtime, a, b, sfa, sfb, out, m, n, k, **kwargs):
+    def make_run(spec):
+        return lambda: runtime.launch_mxfp8(spec, a, b, sfa, sfb, out)
+
+    return _select_kernel(
+        runtime,
+        MXFP8_KERNELS,
+        MXFP8_KERNEL_BY_NAME,
+        "mxfp8",
+        MXFP8_KERNEL_SET_VERSION,
+        make_run,
+        m,
+        n,
+        k,
+        **kwargs,
+    )
+
+
+def _select_bf16_kernel(runtime, a, b, out, m, n, k, **kwargs):
+    def make_run(spec):
+        return lambda: runtime.launch_bf16(spec, a, b, out)
+
+    return _select_kernel(
+        runtime,
+        BF16_KERNELS,
+        BF16_KERNEL_BY_NAME,
+        "bf16",
+        BF16_KERNEL_SET_VERSION,
+        make_run,
+        m,
+        n,
+        k,
+        **kwargs,
+    )
 
 
 def matmul_mxfp8_out(
@@ -259,7 +325,7 @@ def matmul_mxfp8_out(
         device_index = torch.cuda.current_device()
     with torch.cuda.device(device_index):
         runtime = runtime_for(device_index)
-        spec = _select_kernel(
+        spec = _select_mxfp8_kernel(
             runtime,
             a,
             b,
@@ -273,7 +339,7 @@ def matmul_mxfp8_out(
             print_tuning=print_tuning,
             tuning_window=tuning_window,
         )
-        runtime.launch(spec, a, b, sfa, sfb, out)
+        runtime.launch_mxfp8(spec, a, b, sfa, sfb, out)
         return out
 
 
@@ -294,6 +360,71 @@ def matmul_mxfp8(
         b,
         sfa,
         sfb,
+        out,
+        retune=retune,
+        print_tuning=print_tuning,
+        tuning_window=tuning_window,
+    )
+
+
+def matmul_bf16_out(
+    a,
+    b,
+    out,
+    retune=False,
+    print_tuning=False,
+    tuning_window=1,
+):
+    """Compute out[M,N] = A[M,K] @ B[K,N] for BF16 operands.
+
+    B is conventional row-major [K,N], unlike the MXFP8 path, which takes the
+    transposed RHS for its ABt kernels. Selection and caching work exactly as
+    they do for MXFP8, against the BF16 candidate set; the cache key records the
+    data type so the two never collide. The only bundled BF16 candidate so far is
+    a torch.matmul passthrough.
+    """
+    m, n, k = _validate_bf16(a, b)
+    if out.device != a.device:
+        raise ValueError("out must be on the same CUDA device as the inputs")
+    if out.dtype != torch.bfloat16:
+        raise TypeError("out must have dtype torch.bfloat16")
+    if tuple(out.shape) != (m, n) or not out.is_contiguous():
+        raise ValueError(f"out must be contiguous with shape {(m, n)}")
+
+    device_index = a.device.index
+    if device_index is None:
+        device_index = torch.cuda.current_device()
+    with torch.cuda.device(device_index):
+        runtime = runtime_for(device_index)
+        spec = _select_bf16_kernel(
+            runtime,
+            a,
+            b,
+            out,
+            m,
+            n,
+            k,
+            retune=retune,
+            print_tuning=print_tuning,
+            tuning_window=tuning_window,
+        )
+        runtime.launch_bf16(spec, a, b, out)
+        return out
+
+
+def matmul_bf16(
+    a,
+    b,
+    retune=False,
+    print_tuning=False,
+    tuning_window=1,
+):
+    """Allocate and return C[M,N] for BF16 A[M,K] and B[K,N]."""
+    m, n = a.shape[0], b.shape[1]
+    out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
+    return matmul_bf16_out(
+        a,
+        b,
         out,
         retune=retune,
         print_tuning=print_tuning,

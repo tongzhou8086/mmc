@@ -6,7 +6,7 @@ import torch
 import mmc
 from mmc import _api
 from mmc._api import E8M0_BIAS, _quantize_rows
-from mmc._kernels import KERNELS
+from mmc._kernels import MXFP8_KERNEL_SET_VERSION, MXFP8_KERNELS
 
 
 def _dequantize(values, scales):
@@ -55,9 +55,9 @@ def test_retune_bypasses_cached_winner(tmp_path, monkeypatch):
     m, k = aq.shape
     n = bq.shape[0]
     runtime = _api.runtime_for(torch.cuda.current_device())
-    key = _api._cache_key(runtime, m, n, k)
+    key = _api._cache_key(runtime, MXFP8_KERNEL_SET_VERSION, m, n, k)
     cache_path = Path(tmp_path) / "autotune.json"
-    cache_path.write_text(json.dumps({key: KERNELS[0].name}))
+    cache_path.write_text(json.dumps({key: MXFP8_KERNELS[0].name}))
 
     benchmark_calls = 0
 
@@ -73,5 +73,5 @@ def test_retune_bypasses_cached_winner(tmp_path, monkeypatch):
 
     mmc.matmul_mxfp8(aq, bq, sfa, sfb, retune=True)
     torch.cuda.synchronize()
-    compatible = [spec for spec in KERNELS if k % spec.bk == 0]
+    compatible = [spec for spec in MXFP8_KERNELS if k % spec.bk == 0]
     assert benchmark_calls == 3 * len(compatible)

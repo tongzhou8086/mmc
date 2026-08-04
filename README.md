@@ -43,6 +43,29 @@ The result is row-major BF16 `C[M,N]`.
 Current shape constraints are `M % 256 == 0`, `N % 256 == 0`, and
 `K % 128 == 0`.
 
+## BF16
+
+`matmul_bf16` computes `C[M,N] = A[M,K] @ B[K,N]` for BF16 operands. `B` is
+conventional row-major `[K,N]`, unlike the MXFP8 path, which takes the transposed
+RHS for its ABt kernels:
+
+```python
+A = torch.randn((8192, 1024), dtype=torch.bfloat16, device="cuda")
+B = torch.randn((1024, 8192), dtype=torch.bfloat16, device="cuda")
+
+C = mmc.matmul_bf16(A, B)
+```
+
+`matmul_bf16_out` reuses an existing output allocation, and both take the same
+`retune`, `print_tuning`, and `tuning_window` options as their MXFP8
+counterparts. The BF16 candidate set currently holds one entry, a `torch.matmul`
+passthrough; BF16 CUDA kernels will be added to it. BF16 has no divisibility
+constraints today.
+
+Autotuning is per data type: each kernel set has its own version and the cache key
+carries it, so MXFP8 and BF16 winners for the same shape never collide and bumping
+one set does not invalidate the other.
+
 ## Autotuning
 
 The first `matmul_mxfp8` call for a shape benchmarks all compatible bundled
