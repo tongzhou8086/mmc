@@ -41,16 +41,11 @@ KERNELS = (
         "single-ns4-store3-bk128-bn384-earlysc", 128, 384, 224768,
         bn_local_tail=64,
     ),
-    # `-splitacc` uses one accumulator-free barrier per MMA N group, so the next
-    # tile's N=128 MMA can start as soon as the epilogue has drained the N=128
-    # accumulator columns instead of waiting for the whole 384-column tile.
-    KernelSpec(
-        "single-ns4-store3-bk128-bn384-splitacc", 128, 384, 224768,
-        bn_local_tail=64,
-    ),
-    # `-splitacc2` goes further: the register loads are aligned with the MMA N
-    # groups (128 columns then 256), so each group's accumulator columns are
-    # released before any of that group's SMEM staging or TMA stores.
+    # `-splitacc2` uses one accumulator-free barrier per MMA N group, with the
+    # epilogue's register loads aligned to those groups (128 columns then 256),
+    # so each group's accumulator columns are released before any of that
+    # group's SMEM staging or TMA stores and the next output tile's MMA for that
+    # group overlaps all of it.
     KernelSpec(
         "single-ns4-store3-bk128-bn384-splitacc2", 128, 384, 224768,
         bn_local_tail=64,
