@@ -58,9 +58,12 @@ C = mmc.matmul_bf16(A, B)
 
 `matmul_bf16_out` reuses an existing output allocation, and both take the same
 `retune`, `print_tuning`, and `tuning_window` options as their MXFP8
-counterparts. The BF16 candidate set currently holds one entry, a `torch.matmul`
-passthrough; BF16 CUDA kernels will be added to it. BF16 has no divisibility
-constraints today.
+counterparts.
+
+The BF16 candidate set holds a CUDA kernel plus a `torch.matmul` passthrough. The
+CUDA kernel requires `M % 256 == 0`, `N % 256 == 0` and `K % 64 == 0`; shapes that
+do not meet that are tuned over the remaining candidates, so `torch.matmul` always
+applies and `matmul_bf16` accepts any shape.
 
 Autotuning is per data type: each kernel set has its own version and the cache key
 carries it, so MXFP8 and BF16 winners for the same shape never collide and bumping

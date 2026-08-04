@@ -227,14 +227,22 @@ def _select_kernel(
     cache = _read_cache()
     key = _cache_key(runtime, kernel_set_version, m, n, k)
     cached = cache.get(key)
-    if (
-        not retune
-        and cached in kernel_by_name
-        and k % kernel_by_name[cached].bk == 0
-    ):
-        return kernel_by_name[cached]
+    if not retune and cached in kernel_by_name:
+        spec = kernel_by_name[cached]
+        if (
+            k % spec.bk == 0
+            and m % spec.m_multiple == 0
+            and n % spec.n_multiple == 0
+        ):
+            return spec
 
-    candidates = [spec for spec in kernels if k % spec.bk == 0]
+    candidates = [
+        spec
+        for spec in kernels
+        if k % spec.bk == 0
+        and m % spec.m_multiple == 0
+        and n % spec.n_multiple == 0
+    ]
     if not candidates:
         raise ValueError(f"no bundled {dtype} kernel is compatible with K={k}")
     timings = {spec.name: [] for spec in candidates}
