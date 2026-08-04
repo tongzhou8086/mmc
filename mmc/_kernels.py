@@ -60,6 +60,10 @@ KERNELS = (
     KernelSpec("tk-4096", 128, backend="tk"),
     KernelSpec("tk-8192", 128, backend="tk"),
     KernelSpec("tk-16384", 128, backend="tk"),
+    # The tcgen05_kernels F4 kernel (fc2_mxfp8_add_matrix_fwd): MXFP8 ABt with an
+    # optional BF16 residual add. MMC has no residual input, so this runs the
+    # HAS_C=false specialization, which elides the residual load and add.
+    KernelSpec("tk-fc2add", 128, backend="tk"),
 )
 
 KERNEL_BY_NAME = {kernel.name: kernel for kernel in KERNELS}
