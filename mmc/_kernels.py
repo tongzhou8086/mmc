@@ -21,8 +21,8 @@ class KernelSpec:
     bn_local_tail: int = 0
 
 
-# These are the retained candidates from mxfp8-gemm-study/autotune.
-KERNELS = (
+# These are the retained MXFP8 candidates from mxfp8-gemm-study/autotune.
+MXFP8_KERNELS = (
     KernelSpec("single-ns5-store3-bk128-load256", 128, 384, 224768),
     KernelSpec("single-ns6-store1-bk128-load256", 128, 384, 226304),
     KernelSpec("single-ns3-store1-bk256-load256", 256, 384, 226304),
@@ -62,5 +62,18 @@ KERNELS = (
     KernelSpec("tk-16384", 128, backend="tk"),
 )
 
-KERNEL_BY_NAME = {kernel.name: kernel for kernel in KERNELS}
-KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
+# BF16 candidates. For now the only one is a torch.matmul passthrough, which
+# gives matmul_bf16 a working baseline and something for the autotuner to select
+# while the BF16 CUDA kernels are written. bk=1 so every K is compatible.
+BF16_KERNELS = (
+    KernelSpec("torch.matmul", 1, backend="torch"),
+)
+
+MXFP8_KERNEL_BY_NAME = {kernel.name: kernel for kernel in MXFP8_KERNELS}
+BF16_KERNEL_BY_NAME = {kernel.name: kernel for kernel in BF16_KERNELS}
+# One version per kernel set. The autotune cache key carries it, so bumping one
+# set's version invalidates only that set's cached winners, and the two sets'
+# winners for the same shape cannot collide. Keep these distinct.
+MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
+BF16_KERNEL_SET_VERSION = "sm100a-bf16-v1"
+assert MXFP8_KERNEL_SET_VERSION != BF16_KERNEL_SET_VERSION

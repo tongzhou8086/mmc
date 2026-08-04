@@ -267,7 +267,19 @@ class Runtime:
         # kernel_params contains addresses into argument_storage, so retain both.
         return launch_args, argument_storage
 
-    def launch(self, spec, a, b, sfa, sfb, out):
+    def launch_bf16(self, spec, a, b, out):
+        """Compute out[M,N] = A[M,K] @ B[K,N] for BF16 operands.
+
+        B is conventional row-major [K,N]. Only the torch.matmul passthrough
+        exists so far; BF16 CUDA kernels will add their own branch here.
+        """
+        if spec.backend != "torch":
+            raise RuntimeError(
+                f"{spec.name}: unsupported BF16 backend {spec.backend!r}"
+            )
+        torch.matmul(a, b, out=out)
+
+    def launch_mxfp8(self, spec, a, b, sfa, sfb, out):
         if spec.backend == "tk":
             self._launch_tk(spec, a, b, sfa, sfb, out)
             return
