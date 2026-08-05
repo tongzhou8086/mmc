@@ -97,6 +97,13 @@ BF16_KERNELS = (
         "bf16-single-ns4-store2-bk64-bn512-load256-w8", 64, 384, 230400,
         m_multiple=256, n_multiple=512,
     ),
+    # Same 8-warp/256-column drain with one accumulator-free barrier per MMA
+    # panel: the epilogue releases a panel as soon as it is in registers, so the
+    # next tile's first-panel MMAs overlap the second panel's drain and stores.
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc", 64, 384, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 
@@ -106,5 +113,5 @@ BF16_KERNEL_BY_NAME = {kernel.name: kernel for kernel in BF16_KERNELS}
 # set's version invalidates only that set's cached winners, and the two sets'
 # winners for the same shape cannot collide. Keep these distinct.
 MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
-BF16_KERNEL_SET_VERSION = "sm100a-bf16-v3"
+BF16_KERNEL_SET_VERSION = "sm100a-bf16-v4"
 assert MXFP8_KERNEL_SET_VERSION != BF16_KERNEL_SET_VERSION
