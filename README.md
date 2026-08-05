@@ -58,7 +58,11 @@ C = mmc.matmul_bf16(A, B)
 
 `matmul_bf16_out` reuses an existing output allocation, and both take the same
 `retune`, `print_tuning`, and `tuning_window` options as their MXFP8
-counterparts.
+counterparts. To inspect BF16 tuning results from the command line:
+
+```bash
+python benchmarks/tune_matmul_bf16.py 4096 8192x8192x512
+```
 
 The BF16 candidate set holds two CUDA kernels plus a `torch.matmul` passthrough.
 Each CUDA kernel declares the shape alignment it needs — both want
