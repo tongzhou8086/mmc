@@ -390,7 +390,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
                     }
                 }
 
-                __syncwarp();
                 fence_proxy_async_shared_cta();
                 bar_sync<1, EPI_THREADS>();
 

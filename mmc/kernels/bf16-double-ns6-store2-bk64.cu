@@ -542,7 +542,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
                             *reinterpret_cast<int4*>(write_ptr) = *reinterpret_cast<int4*>(pk);
                         }
 
-                        __syncwarp();
                         asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
                         asm volatile("bar.sync 1, %0;" :: "n"(EPI_THREADS));
 
