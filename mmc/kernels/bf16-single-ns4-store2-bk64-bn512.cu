@@ -520,22 +520,34 @@ __device__ __forceinline__ void matmul_cluster_impl(
                         tcgen05_wait_ld();
 
 
-                        // The TMEM->reg load above doesn't touch the store buffer, so the
-                        // free-store-slot wait below is deferred to just before the buffer write
-                        // (and stays before the bar.sync so every warp observes the ew==0 wait).
-                        if (chunk == NUM_CHUNKS - 1)
-                            tcgen05_fence_before_thread_sync();
-
-                        if (ew == 0)
-                            tma_wait_group<TMA_STORE_STAGES - 1>();
-
-                        asm volatile("bar.sync 1, %0;" :: "n"(EPI_THREADS));
-
+                        // Release the TMEM accumulator as soon as its last
+                        // columns are in registers. That only requires every
+                        // epilogue warp to have finished its tcgen05.ld - the
+                        // next tile's MMA does not care whether a store buffer
+                        // is free - so the arrive goes before the
+                        // free-store-slot wait, not after it.
+                        //
+                        // tcgen05_wait_ld above covers only the issuing warp, so
+                        // the bar.sync is what lets one warp's arrive speak for
+                        // all four. It cannot be dropped or moved after the
+                        // arrive: the MMA would then be free to overwrite TMEM
+                        // while the other warps are still reading it.
                         if (chunk == NUM_CHUNKS - 1) {
+                            tcgen05_fence_before_thread_sync();
+                            asm volatile("bar.sync 1, %0;" :: "n"(EPI_THREADS));
                             if (ew == 0 && elect_sync())
                                 mbarrier_arrive_no_tx_cluster_cta0(
                                     mbar_tmem_buffer_free[buf]);
                         }
+
+                        // The TMEM->reg load above doesn't touch the store
+                        // buffer, so the free-store-slot wait is deferred to
+                        // just before the buffer write, and stays before the
+                        // bar.sync so every warp observes the ew==0 wait.
+                        if (ew == 0)
+                            tma_wait_group<TMA_STORE_STAGES - 1>();
+
+                        asm volatile("bar.sync 1, %0;" :: "n"(EPI_THREADS));
 
                         #pragma unroll
                         for (int n = 0; n < LOADS_PER_WARP; n++) {
