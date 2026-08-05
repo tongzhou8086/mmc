@@ -104,6 +104,49 @@ BF16_KERNELS = (
         "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc", 64, 384, 230400,
         m_multiple=256, n_multiple=512,
     ),
+    # GROUP_SIZE_M=12 and 16 variants of every kernel above. Only the
+    # CTA-swizzle chunk differs, which changes the L2 reuse pattern and the
+    # order clusters retire in, so the best value is shape-dependent.
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-gsm12", 64, 256, 230400,
+        m_multiple=256, n_multiple=256,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-gsm12", 64, 256, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load128-gsm12", 64, 256, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-gsm12", 64, 384, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-gsm12", 64, 384, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-gsm16", 64, 256, 230400,
+        m_multiple=256, n_multiple=256,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-gsm16", 64, 256, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load128-gsm16", 64, 256, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-gsm16", 64, 384, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-gsm16", 64, 384, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 
@@ -113,5 +156,5 @@ BF16_KERNEL_BY_NAME = {kernel.name: kernel for kernel in BF16_KERNELS}
 # set's version invalidates only that set's cached winners, and the two sets'
 # winners for the same shape cannot collide. Keep these distinct.
 MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
-BF16_KERNEL_SET_VERSION = "sm100a-bf16-v4"
+BF16_KERNEL_SET_VERSION = "sm100a-bf16-v5"
 assert MXFP8_KERNEL_SET_VERSION != BF16_KERNEL_SET_VERSION
