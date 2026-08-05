@@ -64,8 +64,8 @@ counterparts. To inspect BF16 tuning results from the command line:
 python benchmarks/tune_matmul_bf16.py 4096 8192x8192x512
 ```
 
-The BF16 candidate set holds two CUDA kernels plus a `torch.matmul` passthrough.
-Each CUDA kernel declares the shape alignment it needs — both want
+The BF16 candidate set holds three CUDA kernels plus a `torch.matmul` passthrough.
+Each CUDA kernel declares the shape alignment it needs — all of them want
 `M % 256 == 0` and `K % 64 == 0`, and `N % 256 == 0` or `N % 512 == 0` depending on
 its tile width. Shapes that do not meet a kernel's requirement are tuned over the
 remaining candidates, so `torch.matmul` always applies and `matmul_bf16` accepts
