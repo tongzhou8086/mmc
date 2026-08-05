@@ -14,6 +14,10 @@ class KernelSpec:
     threads: int = 0
     shared_bytes: int = 0
     backend: str = "cuda"
+    # Shape alignment the kernel requires, beyond K % bk == 0. Candidates that
+    # do not divide a shape are filtered out of autotuning for it.
+    m_multiple: int = 1
+    n_multiple: int = 1
     # BN=384 kernels take a second B descriptor with this many rows per box.
     # Both of their MMAs are cta_group::2 and split N across the CTA pair, so
     # each CTA holds 128 B rows for the N=256 MMA plus this many for the N=128
@@ -62,10 +66,15 @@ MXFP8_KERNELS = (
     KernelSpec("tk-16384", 128, backend="tk"),
 )
 
-# BF16 candidates. For now the only one is a torch.matmul passthrough, which
-# gives matmul_bf16 a working baseline and something for the autotuner to select
-# while the BF16 CUDA kernels are written. bk=1 so every K is compatible.
+# BF16 candidates. torch.matmul is the always-eligible fallback (bk=1 and no
+# alignment requirement), so every shape has at least one candidate.
 BF16_KERNELS = (
+    # C[M,N] = A[M,K] @ B[K,N], 2-CTA cluster MMA, double-buffered TMEM, chunked
+    # TMA-store epilogue. Needs M % 256 == 0, N % 256 == 0 and K % 64 == 0.
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64", 64, 256, 230400,
+        m_multiple=256, n_multiple=256,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 

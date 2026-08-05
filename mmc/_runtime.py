@@ -106,6 +106,27 @@ def _value_map(tensor, rows, cols, tile_rows, tile_cols, element_bytes, dtype):
     )
 
 
+def _bf16_map(tensor, rows, cols, box_rows, box_cols):
+    """Rank-2 128B-swizzled BF16 map over a row-major [rows, cols] tensor.
+
+    cuTensorMapEncodeTiled takes dimensions innermost-first, so a row-major
+    [rows, cols] tensor is described as global_dim [cols, rows] with one stride,
+    the row pitch in bytes. The MXFP8 kernels instead use rank-5 maps that fold
+    the 128B swizzle group into its own axis; these BF16 descriptors are the
+    plain rank-2 form the kernel was written against.
+    """
+    element_bytes = 2
+    return _tensor_map(
+        dtype=TMA_BFLOAT16,
+        rank=2,
+        pointer=tensor.data_ptr(),
+        global_dim=[cols, rows],
+        global_strides=[cols * element_bytes],
+        box_dim=[box_cols, box_rows],
+        swizzle=TMA_SWIZZLE_128B,
+    )
+
+
 def _scale_map(tensor, outer, k_tiles):
     return _tensor_map(
         dtype=TMA_UINT8,
@@ -143,6 +164,7 @@ class Runtime:
         self.driver_version = _cu(driver.cuDriverGetVersion())
         self._functions = {}
         self._launch_cache = {}
+        self._bf16_launch_cache = {}
         self._tk_functions = {}
         self._tk_launch_cache = {}
 
@@ -267,17 +289,75 @@ class Runtime:
         # kernel_params contains addresses into argument_storage, so retain both.
         return launch_args, argument_storage
 
+    def _build_bf16_launch_args(self, spec, a, b, out, stream):
+        m, k = a.shape
+        n = b.shape[1]
+        # The BF16 kernels take three rank-2 descriptors: A[M,K] tiled BM x BK,
+        # B[K,N] tiled BK x one 128B swizzle group (64 BF16 columns), and C[M,N]
+        # tiled BM x STORE_N for the chunked TMA-store epilogue.
+        bf16_swizzle_elements = 128 // 2
+        descriptors = (
+            _bf16_map(a, m, k, BM, spec.bk),
+            _bf16_map(b, k, n, spec.bk, bf16_swizzle_elements),
+            _bf16_map(out, m, n, BM, STORE_N),
+        )
+        argument_storage = [_by_value(descriptor) for descriptor in descriptors]
+        argument_storage.extend([
+            ctypes.c_void_p(out.data_ptr()),
+            ctypes.c_int(m),
+            ctypes.c_int(n),
+            ctypes.c_int(k),
+        ])
+        kernel_params = (ctypes.c_void_p * len(argument_storage))(
+            *[ctypes.addressof(arg) for arg in argument_storage]
+        )
+        grid = self.sm_count - self.sm_count % 2
+        launch_args = (
+            self._function(spec),
+            grid, 1, 1,
+            spec.threads, 1, 1,
+            spec.shared_bytes,
+            stream,
+            kernel_params,
+            0,
+        )
+        # kernel_params contains addresses into argument_storage, so retain both.
+        return launch_args, argument_storage
+
     def launch_bf16(self, spec, a, b, out):
         """Compute out[M,N] = A[M,K] @ B[K,N] for BF16 operands.
 
-        B is conventional row-major [K,N]. Only the torch.matmul passthrough
-        exists so far; BF16 CUDA kernels will add their own branch here.
+        B is conventional row-major [K,N], so these are AB kernels rather than
+        the ABt ones the MXFP8 path uses.
         """
-        if spec.backend != "torch":
+        if spec.backend == "torch":
+            torch.matmul(a, b, out=out)
+            return
+        if spec.backend != "cuda":
             raise RuntimeError(
                 f"{spec.name}: unsupported BF16 backend {spec.backend!r}"
             )
-        torch.matmul(a, b, out=out)
+
+        m, k = a.shape
+        n = b.shape[1]
+        stream = torch.cuda.current_stream(self.device_index).cuda_stream
+        key = (
+            spec.name,
+            a.data_ptr(),
+            b.data_ptr(),
+            out.data_ptr(),
+            m,
+            n,
+            k,
+            stream,
+        )
+        if key not in self._bf16_launch_cache:
+            self._bf16_launch_cache[key] = self._build_bf16_launch_args(
+                spec, a, b, out, stream
+            )
+
+        launch_args, _argument_storage = self._bf16_launch_cache[key]
+        _cu(driver.cuLaunchKernel(*launch_args))
 
     def launch_mxfp8(self, spec, a, b, sfa, sfb, out):
         if spec.backend == "tk":
