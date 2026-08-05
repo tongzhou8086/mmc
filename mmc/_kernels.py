@@ -75,6 +75,13 @@ BF16_KERNELS = (
         "bf16-double-ns6-store2-bk64", 64, 256, 230400,
         m_multiple=256, n_multiple=256,
     ),
+    # BN=512 with a single TMEM accumulator: the epilogue drain is synchronized
+    # before the accumulator is reused, which fits twice the output columns in
+    # the same TMEM budget. Needs M % 256 == 0, N % 512 == 0 and K % 64 == 0.
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512", 64, 256, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 

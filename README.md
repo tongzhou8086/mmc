@@ -60,10 +60,12 @@ C = mmc.matmul_bf16(A, B)
 `retune`, `print_tuning`, and `tuning_window` options as their MXFP8
 counterparts.
 
-The BF16 candidate set holds a CUDA kernel plus a `torch.matmul` passthrough. The
-CUDA kernel requires `M % 256 == 0`, `N % 256 == 0` and `K % 64 == 0`; shapes that
-do not meet that are tuned over the remaining candidates, so `torch.matmul` always
-applies and `matmul_bf16` accepts any shape.
+The BF16 candidate set holds two CUDA kernels plus a `torch.matmul` passthrough.
+Each CUDA kernel declares the shape alignment it needs — both want
+`M % 256 == 0` and `K % 64 == 0`, and `N % 256 == 0` or `N % 512 == 0` depending on
+its tile width. Shapes that do not meet a kernel's requirement are tuned over the
+remaining candidates, so `torch.matmul` always applies and `matmul_bf16` accepts
+any shape.
 
 Autotuning is per data type: each kernel set has its own version and the cache key
 carries it, so MXFP8 and BF16 winners for the same shape never collide and bumping
