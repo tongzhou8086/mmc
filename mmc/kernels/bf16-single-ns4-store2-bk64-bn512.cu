@@ -234,6 +234,14 @@ __device__ __forceinline__ void mbarrier_arrive_no_tx_cluster(uint32_t mb) {
     asm volatile("mbarrier.arrive.release.cta.shared::cluster.b64 _, [%0];"
                  :: "r"(mb) : "memory");
 }
+// Cluster-scope address of an mbarrier as owned by CTA 0: clearing bit 24 of the
+// distributed-SMEM address selects CTA 0 of the pair.
+__device__ __forceinline__ uint32_t mbarrier_addr_in_cta0(uint64_t& mbarrier) {
+    return ((uint32_t)__cvta_generic_to_shared(&mbarrier)) & 0xFEFFFFFFu;
+}
+__device__ __forceinline__ void mbarrier_arrive_no_tx_cluster_cta0(uint64_t& mbarrier) {
+    mbarrier_arrive_no_tx_cluster(mbarrier_addr_in_cta0(mbarrier));
+}
 __device__ __forceinline__ void signal_on_bytes_loaded(uint32_t mb, int bytes) {
     asm volatile("mbarrier.arrive.expect_tx.release.cta.shared::cluster.b64 _, [%0], %1;"
                  :: "r"(mb), "r"(bytes) : "memory");
@@ -360,9 +368,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
             for (int b = 0; b < 2; b++) {
                 mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[b]), 1);
                 mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[b]), CTA_GROUP);
-                uint32_t tmem_buffer_free_cta0 =
-                    ((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[b])) & 0xFEFFFFFFu;
-                mbarrier_arrive_no_tx_cluster(tmem_buffer_free_cta0);
+                mbarrier_arrive_no_tx_cluster_cta0(mbar_tmem_buffer_free[b]);
             }
             asm volatile("fence.mbarrier_init.release.cluster;");
         }
@@ -412,7 +418,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
                     uint32_t compute_buffer_free_addr =
                         (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[slot]);
                     uint32_t compute_data_ready_cta0 =
-                        ((uint32_t)__cvta_generic_to_shared(&mbar_compute_data_ready[slot])) & 0xFEFFFFFFu;
+                        mbarrier_addr_in_cta0(mbar_compute_data_ready[slot]);
                     wait_phase(compute_buffer_free_addr, compute_buffer_free_phase[slot]);
                     tma_2d_load_g2(A_base(slot), A_tmap, k * BK, local_m, compute_data_ready_cta0);
                     #pragma unroll
@@ -472,7 +478,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
             // TMEM buffer with a CTA-0-masked cluster arrive.
 #define EPI_OUT_ROW                 local_m
 #define EPI_OUT_COL_BASE            base_n
-#define signal_sync(buf)   do { uint32_t _f = ((uint32_t)__cvta_generic_to_shared(&mbar_tmem_buffer_free[buf])) & 0xFEFFFFFFu; mbarrier_arrive_no_tx_cluster(_f); } while (0)
             constexpr int ROW_STRIPS    = BM / 32;
             constexpr int COL_GROUPS    = NUM_WARPS / ROW_STRIPS;
             constexpr int COLS_PER_WARP = BN / COL_GROUPS;
@@ -528,7 +533,8 @@ __device__ __forceinline__ void matmul_cluster_impl(
 
                         if (chunk == NUM_CHUNKS - 1) {
                             if (ew == 0 && elect_sync())
-                                signal_sync(buf);
+                                mbarrier_arrive_no_tx_cluster_cta0(
+                                    mbar_tmem_buffer_free[buf]);
                         }
 
                         #pragma unroll
@@ -564,7 +570,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
             asm volatile("bar.sync 1, %0;" :: "n"(EPI_THREADS));
 #undef EPI_OUT_ROW
 #undef EPI_OUT_COL_BASE
-#undef signal_sync
         }
 
         __syncthreads();
