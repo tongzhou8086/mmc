@@ -90,6 +90,6 @@ BF16_KERNEL_BY_NAME = {kernel.name: kernel for kernel in BF16_KERNELS}
 # One version per kernel set. The autotune cache key carries it, so bumping one
 # set's version invalidates only that set's cached winners, and the two sets'
 # winners for the same shape cannot collide. Keep these distinct.
-MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
+MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v7"
 BF16_KERNEL_SET_VERSION = "sm100a-bf16-v1"
 assert MXFP8_KERNEL_SET_VERSION != BF16_KERNEL_SET_VERSION

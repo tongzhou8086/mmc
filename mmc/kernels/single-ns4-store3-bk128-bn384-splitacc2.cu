@@ -478,6 +478,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
                 tcgen05_wait_ld();
 
                 tcgen05_fence_before_thread_sync();
+                bar_sync<1, EPI_THREADS>();
                 if (ew == 0 && elect_sync()) {
                     if (phase == 0) {
                         mbarrier_arrive_no_tx_cluster_cta0(
