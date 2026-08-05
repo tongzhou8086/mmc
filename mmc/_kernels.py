@@ -89,6 +89,14 @@ BF16_KERNELS = (
         "bf16-single-ns4-store2-bk64-bn512-load128", 64, 256, 230400,
         m_multiple=256, n_multiple=512,
     ),
+    # Same two-level drain widened to 256 columns per outer iteration, which
+    # takes the whole BN=512 tile out of TMEM in two trips. 8 epilogue warps
+    # split the columns into two groups, so a lane still holds 128 floats;
+    # launch width grows to 384 threads.
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8", 64, 384, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 
@@ -98,5 +106,5 @@ BF16_KERNEL_BY_NAME = {kernel.name: kernel for kernel in BF16_KERNELS}
 # set's version invalidates only that set's cached winners, and the two sets'
 # winners for the same shape cannot collide. Keep these distinct.
 MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
-BF16_KERNEL_SET_VERSION = "sm100a-bf16-v2"
+BF16_KERNEL_SET_VERSION = "sm100a-bf16-v3"
 assert MXFP8_KERNEL_SET_VERSION != BF16_KERNEL_SET_VERSION
