@@ -104,6 +104,13 @@ BF16_KERNELS = (
         "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc", 64, 384, 230400,
         m_multiple=256, n_multiple=512,
     ),
+    # Same split-panel barriers, but at k == 0 the MMA warp runs panel 0 ahead by
+    # LEAD_K=2 k-tiles instead of stalling on panel 1's free barrier; panel 1
+    # replays those k-tiles from the same pinned SMEM slots.
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-lead2",
+        64, 384, 230400, m_multiple=256, n_multiple=512,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 
@@ -113,5 +120,5 @@ BF16_KERNEL_BY_NAME = {kernel.name: kernel for kernel in BF16_KERNELS}
 # set's version invalidates only that set's cached winners, and the two sets'
 # winners for the same shape cannot collide. Keep these distinct.
 MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
-BF16_KERNEL_SET_VERSION = "sm100a-bf16-v4"
+BF16_KERNEL_SET_VERSION = "sm100a-bf16-v6"
 assert MXFP8_KERNEL_SET_VERSION != BF16_KERNEL_SET_VERSION
