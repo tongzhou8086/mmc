@@ -111,6 +111,12 @@ BF16_KERNELS = (
         "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-lead2",
         64, 384, 230400, m_multiple=256, n_multiple=512,
     ),
+    # Lead depth 3. With NS=4 this pins three of the four SMEM slots during the
+    # k == 0 block, leaving the TMA warp one slot of prefetch.
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-lead3",
+        64, 384, 230400, m_multiple=256, n_multiple=512,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 
