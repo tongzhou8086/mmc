@@ -494,27 +494,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
                 const uint32_t trow =
                     (taddr + buf * BN) + ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
                 constexpr int LDW = TCGEN05_LD_WIDTH;
-
-                // ── Overlap epilogue drain (TMEM → SMEM → GMEM), shared ─────
-                // Spliced into the overlap epilogue-warp loop of every warp-spec
-                // tier's drain marker, right after `trow` (the tier-specific TMEM
-                // lane base) and `LDW` are in scope.  The skeleton supplies three
-                // contract macros for the per-tier bits:
-                //   EPI_OUT_ROW                  this CTA's GMEM row base
-                //   EPI_OUT_COL_BASE             this CTA's GMEM column base
-                //   signal_sync(buf)    release the drained TMEM buffer
-                // EPILOGUE_TMA_PIPELINED picks the Paul-v6-style path:
-                // chunk BN into STORE_N=64 columns, stage each chunk into one
-                // of TMA_STORE_STAGES compact swizzled SMEM buffers, and
-                // launch TMA stores.
-                // EPILOGUE_SPLIT (constexpr) picks the two-pass half-BN writeback,
-                // which stages one BN/2 column panel at a time (EPI_STAGE_COLS=BN/2)
-                // so the epilogue SMEM shrinks enough for an extra K-loop stage.
-                //
-                // EPILOGUE_L1_NO_ALLOC (knob): the write-once C store bypasses L1
-                // allocation (`st...L1::no_allocate`) so it doesn't evict A/B from
-                // L1.  Measured win when the epilogue is exposed (low K), null at
-                // high K — so it's a sweep knob, not always-on.
                 {
                     constexpr int LOADS_PER_CHUNK = STORE_N / 8;
                     constexpr int LOADS_PER_WARP = LOADS_PER_CHUNK / COL_GROUPS;
