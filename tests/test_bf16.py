@@ -73,32 +73,37 @@ def test_matmul_bf16_rejects_bad_operands():
 
 def test_bf16_retune_reports_every_candidate(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MMC_CACHE_DIR", str(tmp_path))
+    # 512 divides every candidate's N requirement, so all of them are eligible.
     a = torch.randn((256, 256), dtype=torch.bfloat16, device="cuda")
-    b = torch.randn((256, 256), dtype=torch.bfloat16, device="cuda")
+    b = torch.randn((256, 512), dtype=torch.bfloat16, device="cuda")
 
     mmc.matmul_bf16(a, b, retune=True, print_tuning=True)
     printed = capsys.readouterr().out
     for spec in BF16_KERNELS:
-        assert spec.name in printed
+        assert spec.name in printed, spec.name
 
 
-def test_bf16_cuda_kernel_matches_torch():
-    from mmc._kernels import BF16_KERNEL_BY_NAME
-
-    spec = BF16_KERNEL_BY_NAME["bf16-double-ns6-store2-bk64"]
+def test_bf16_cuda_kernels_match_torch():
     runtime = _api.runtime_for(torch.cuda.current_device())
     torch.manual_seed(0)
-    for m, k, n in [(256, 64, 256), (512, 1024, 512), (4096, 1024, 8192)]:
-        a = torch.randn((m, k), dtype=torch.bfloat16, device="cuda")
-        b = torch.randn((k, n), dtype=torch.bfloat16, device="cuda")
-        out = torch.full((m, n), float("nan"), dtype=torch.bfloat16, device="cuda")
-        runtime.launch_bf16(spec, a, b, out)
-        torch.cuda.synchronize()
+    cuda_specs = [spec for spec in BF16_KERNELS if spec.backend == "cuda"]
+    assert cuda_specs
+    for spec in cuda_specs:
+        for m, k, n in [(256, 64, 1024), (512, 1024, 512), (4096, 1024, 8192)]:
+            if m % spec.m_multiple or n % spec.n_multiple or k % spec.bk:
+                continue
+            a = torch.randn((m, k), dtype=torch.bfloat16, device="cuda")
+            b = torch.randn((k, n), dtype=torch.bfloat16, device="cuda")
+            out = torch.full(
+                (m, n), float("nan"), dtype=torch.bfloat16, device="cuda"
+            )
+            runtime.launch_bf16(spec, a, b, out)
+            torch.cuda.synchronize()
 
-        reference = a.float() @ b.float()
-        assert not torch.isnan(out.float()).any()
-        error = (out.float() - reference).abs().max() / reference.abs().max()
-        assert error < 0.02
+            reference = a.float() @ b.float()
+            assert not torch.isnan(out.float()).any(), (spec.name, m, k, n)
+            error = (out.float() - reference).abs().max() / reference.abs().max()
+            assert error < 0.02, (spec.name, m, k, n, float(error))
 
 
 def test_bf16_unaligned_shape_falls_back_to_torch(tmp_path, monkeypatch, capsys):
@@ -110,7 +115,9 @@ def test_bf16_unaligned_shape_falls_back_to_torch(tmp_path, monkeypatch, capsys)
     result = mmc.matmul_bf16(a, b, retune=True, print_tuning=True)
     printed = capsys.readouterr().out
     assert "torch.matmul" in printed
-    assert "bf16-double-ns6-store2-bk64" not in printed
+    for spec in BF16_KERNELS:
+        if spec.backend == "cuda":
+            assert spec.name not in printed
 
     cache = json.loads((Path(tmp_path) / "autotune.json").read_text())
     assert next(iter(cache.values())) == "torch.matmul"
