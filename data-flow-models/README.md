@@ -44,6 +44,15 @@ which one is permissive.)
 **An operation may fire only when its source's output port and its destination's
 input port are both green.**
 
+A **signal** is the only thing that changes a port's state, and it is addressed
+to a buffer rather than to one port — one signal flips both. Each buffer takes
+two kinds:
+
+| Signal | Effect on the buffer it is sent to |
+|---|---|
+| **buffer free** | opens the input port, closes the output port — the data has been consumed, so it may be refilled |
+| **data ready** | opens the output port, closes the input port — the buffer has been filled, so it may be read |
+
 That is the whole model, and it is what makes it useful: synchronization is
 nothing more than flipping port states. Every mbarrier in a kernel toggles one
 port, and every stall is an operation waiting for one of its two ports to turn
@@ -82,6 +91,25 @@ buffer is empty (input green, output red), which is exactly both-green across
 the pipe.
 
 ![An operation is a pipe between two ports](figures/operation-as-pipe.png)
+
+### `signal-flips-a-port`
+
+What a signal is, drawn on the same TMA → MMA pair as the pipe figure: before
+and after one MMA completes. The MMA consumed the TMA buffer, so a buffer-free
+signal is delivered there and flips both of its ports (ringed) — the output
+closes because the data is gone, the input opens so TMA may refill it.
+
+The MMA buffer deliberately does *not* flip: it accumulates over every k-tile,
+and its data-ready signal fires only after the last one.
+
+![A signal is what flips a port](figures/signal-flips-a-port.png)
+
+The same sequence is also generated as a GIF, `signal-flips-a-port.gif`, for
+posts that can show one. The static figure is the primary — it survives print,
+PDF and feed readers — and the two are generated from the same primitives, so
+they cannot drift apart.
+
+![A signal is what flips a port, animated](figures/signal-flips-a-port.gif)
 
 ### `per-slot-initial-state`
 
