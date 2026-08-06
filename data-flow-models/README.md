@@ -15,7 +15,7 @@ Four kinds of buffer:
 |---|---|---|---|---|
 | TMA buffer | SMEM | A / B input tiles | TMA | MMA |
 | MMA buffer | TMEM | the accumulator | MMA | `tcgen05.ld` |
-| Register buffer | RMEM | `tcgen05.ld` results | `tcgen05.ld` | epilogue |
+| `tcgen05.ld` buffer | RMEM | `tcgen05.ld` results | `tcgen05.ld` | epilogue |
 | Store buffer | SMEM | epilogue output staged for the write-back | epilogue | TMA store |
 
 Each buffer is a box with two **ports**: an input port on top and an output port
@@ -55,8 +55,11 @@ flips when.
 
 ### `buffer-kinds`
 
-The four kinds of buffer side by side, with no operations between them. This one
-introduces the vocabulary only: what buffers exist, where they live, and that
+The four kinds of buffer in a 2x2 grid, with no operations between them. They
+are placed so the data flow runs clockwise — TMA to MMA across the top, down to
+the `tcgen05.ld` buffer, then left to the store buffer — which is the shape the
+operation edges will take once they are drawn. This figure introduces the
+vocabulary only: what buffers exist, where they live, and that
 each has an input port on top and an output port on the bottom. Drawn in the
 initial state — every buffer empty, so every input port green and every output
 port red.

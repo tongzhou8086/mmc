@@ -1,7 +1,7 @@
 """Render the data-flow model figures.
 
 The model has four kinds of buffer - TMA (input tiles in SMEM), MMA (the TMEM
-accumulator), register (the tcgen05.ld results in RMEM) and store (the
+accumulator), tcgen05.ld (its results in registers) and store (the
 epilogue's SMEM staging) - drawn as boxes with two ports each: an input port on
 top and an output port on the bottom.
 
@@ -202,44 +202,50 @@ def per_slot_initial_state():
 
 
 def buffer_kinds():
-    """The four kinds of buffer, side by side, with no operations between them.
+    """The four kinds of buffer in a 2x2 grid, with no operations between them.
+
+    Laid out so the data flow runs clockwise - TMA to MMA across the top, down
+    to the tcgen05.ld buffer, then left to the store buffer - which is the shape
+    the operation edges will take once they are drawn.
 
     This figure introduces the vocabulary only: what buffers exist, where they
     live, and that each one has an input port on top and an output port on the
     bottom. The initial state is drawn - every buffer empty, so every input port
     green and every output port red.
     """
-    fig, ax = plt.subplots(figsize=(12.7, 3.9))
+    fig, ax = plt.subplots(figsize=(8.8, 5.6))
 
     kinds = [
-        ("TMA buffer", "SMEM  ·  A / B input tiles",
+        (0, 0, "TMA buffer", "SMEM  ·  A / B input tiles",
          "TMA writes  ·  MMA reads"),
-        ("MMA buffer", "TMEM  ·  accumulator",
+        (1, 0, "MMA buffer", "TMEM  ·  accumulator",
          "MMA writes  ·  tcgen05.ld reads"),
-        ("Register buffer", "RMEM  ·  tcgen05.ld results",
-         "tcgen05.ld writes  ·  epilogue reads"),
-        ("Store buffer", "SMEM  ·  epilogue staging",
+        (0, 1, "Store buffer", "SMEM  ·  epilogue staging",
          "epilogue writes  ·  TMA store reads"),
+        (1, 1, "tcgen05.ld buffer", "RMEM  ·  tcgen05.ld results",
+         "tcgen05.ld writes  ·  epilogue reads"),
     ]
-    for i, (title, subtitle, note) in enumerate(kinds):
-        cx = 1.80 + i * 3.10
-        draw_buffer(ax, cx, 2.35, title, subtitle, READY, NOT_READY, width=2.86)
-        ax.text(cx, 1.40, note, ha="center", va="center",
+    for col, row, title, subtitle, note in kinds:
+        cx = 2.05 + col * 4.30
+        cy = 3.70 - row * 2.45
+        draw_buffer(ax, cx, cy, title, subtitle, READY, NOT_READY, width=3.15)
+        ax.text(cx, cy - 0.95, note, ha="center", va="center",
                 fontsize=8.5, color=MUTED)
 
-    ax.text(0.30, 3.85, "The four kinds of buffer", ha="left", va="center",
+    ax.text(0.30, 5.45, "The four kinds of buffer", ha="left", va="center",
             fontsize=15, fontweight="bold", color=INK)
-    ax.text(0.30, 3.48, "initial state — every buffer empty, no operations drawn yet",
+    ax.text(0.30, 5.08, "initial state — every buffer empty, no operations drawn yet",
             ha="left", va="center", fontsize=10.5, color=MUTED)
 
-    ax.text(0.30, 0.68,
+    ax.text(0.30, -0.30,
             "Every buffer has an input port on top and an output port on the "
-            "bottom. A vertical bar is a path data may pass through, "
-            "a horizontal bar one that is barred.",
-            ha="left", va="center", fontsize=9, color=INK)
+            "bottom.\n"
+            "A vertical bar is a path data may pass through, a horizontal bar "
+            "one that is barred.",
+            ha="left", va="center", fontsize=9, color=INK, linespacing=1.5)
 
-    ax.set_xlim(0.0, 12.75)
-    ax.set_ylim(0.35, 4.15)
+    ax.set_xlim(0.0, 8.9)
+    ax.set_ylim(-0.70, 5.70)
     ax.set_aspect("equal")
     ax.axis("off")
     fig.tight_layout()
