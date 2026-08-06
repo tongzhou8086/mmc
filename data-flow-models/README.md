@@ -9,13 +9,14 @@ python data-flow-models/render.py
 
 ## The model
 
-Three kinds of buffer:
+Four kinds of buffer:
 
-| Buffer | Lives in | Holds |
-|---|---|---|
-| TMA buffer | SMEM | A / B input tiles fetched by TMA |
-| MMA buffer | TMEM | the MMA accumulator |
-| Store buffer | SMEM | epilogue output staged for the write-back to HBM |
+| Buffer | Lives in | Holds | Written by | Read by |
+|---|---|---|---|---|
+| TMA buffer | SMEM | A / B input tiles | TMA | MMA |
+| MMA buffer | TMEM | the accumulator | MMA | `tcgen05.ld` |
+| Register buffer | RMEM | `tcgen05.ld` results | `tcgen05.ld` | epilogue |
+| Store buffer | SMEM | epilogue output staged for the write-back | epilogue | TMA store |
 
 Each buffer is a box with two **ports**: an input port on top and an output port
 on the bottom. An **operation** is an edge from one buffer's output port to
@@ -54,13 +55,16 @@ flips when.
 
 ### `buffer-kinds`
 
-The three kinds of buffer side by side, with no operations between them. This
-one introduces the vocabulary only: what buffers exist, where they live, and
-that each has an input port on top and an output port on the bottom. Drawn in
-the initial state — every buffer empty, so every input port green and every
-output port red.
+The four kinds of buffer side by side, with no operations between them. This one
+introduces the vocabulary only: what buffers exist, where they live, and that
+each has an input port on top and an output port on the bottom. Drawn in the
+initial state — every buffer empty, so every input port green and every output
+port red.
 
-![The three kinds of buffer](figures/buffer-kinds.png)
+It carries no port-state legend: the glyphs and the one-line caption say enough,
+and four legend rows next to four buffers was more text than the figure needed.
+
+![The four kinds of buffer](figures/buffer-kinds.png)
 
 ### `operation-as-pipe`
 
