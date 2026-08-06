@@ -62,6 +62,20 @@ output port red.
 
 ![The three kinds of buffer](figures/buffer-kinds.png)
 
+### `operation-as-pipe`
+
+How an operation is modelled: a pipe joining the source buffer's output port to
+the destination buffer's input port, drawn here for the MMA between the TMA
+buffer and the MMA buffer. The pipe is only the connection — it holds no state
+of its own; the ports do.
+
+The state shown is one where the MMA may actually start, rather than a contrived
+all-green one: the TMA buffer is full (input red, output green) and the MMA
+buffer is empty (input green, output red), which is exactly both-green across
+the pipe.
+
+![An operation is a pipe between two ports](figures/operation-as-pipe.png)
+
 ### `per-slot-initial-state`
 
 One buffer of each kind, in the state the pipeline starts in: every buffer is

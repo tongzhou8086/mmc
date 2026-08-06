@@ -99,6 +99,39 @@ def draw_operation(ax, src_port, dst_port, label, note=None):
                 fontsize=8.5, color=MUTED, zorder=4)
 
 
+PIPE_FACE = "#e3edf7"
+PIPE_EDGE = "#7f9dbb"
+PIPE_W = 0.62
+
+
+def draw_pipe(ax, src_port, dst_port, label, note=None, label_dx=0.62):
+    """Draw an operation as a pipe joining two ports.
+
+    The pipe runs from the source buffer's output port to the destination
+    buffer's input port. Data can move through it only when both ports are
+    green; the pipe itself is just the connection, it carries no state.
+    """
+    x0, y0 = src_port
+    x1, y1 = dst_port
+    top, bottom = max(y0, y1), min(y0, y1)
+    ax.add_patch(FancyBboxPatch(
+        (x0 - PIPE_W / 2, bottom), PIPE_W, top - bottom,
+        boxstyle="round,pad=0,rounding_size=0.06",
+        linewidth=1.5, edgecolor=PIPE_EDGE, facecolor=PIPE_FACE, zorder=1,
+    ))
+    mid = (top + bottom) / 2
+    ax.add_patch(FancyArrowPatch(
+        (x0, mid + 0.30), (x1, mid - 0.30),
+        arrowstyle="-|>", mutation_scale=15, linewidth=1.6,
+        color=PIPE_EDGE, shrinkA=0, shrinkB=0, zorder=3,
+    ))
+    ax.text(x0 + label_dx, mid + 0.13, label, ha="left", va="center",
+            fontsize=11.5, fontweight="bold", color=INK, zorder=4)
+    if note:
+        ax.text(x0 + label_dx, mid - 0.15, note, ha="left", va="center",
+                fontsize=8.5, color=MUTED, zorder=4)
+
+
 def legend(ax, x, y, title="Port states", columns=1, col_width=3.3):
     """Explain what the two port states mean in each port position.
 
@@ -211,8 +244,63 @@ def buffer_kinds():
     return fig
 
 
+def operation_as_pipe():
+    """How an operation is modelled: a pipe joining two ports.
+
+    Drawn in a state where the MMA may actually start - the TMA buffer is full
+    (input red, output green) and the MMA buffer is empty (input green, output
+    red), which is exactly both-green across the pipe.
+    """
+    fig, ax = plt.subplots(figsize=(9.4, 5.6))
+
+    cx = 2.35
+    tma = draw_buffer(ax, cx, 4.00, "TMA buffer",
+                      "SMEM  ·  A / B input tiles", NOT_READY, READY)
+    mma = draw_buffer(ax, cx, 1.45, "MMA buffer",
+                      "TMEM  ·  accumulator", READY, NOT_READY)
+
+    draw_pipe(ax, tma["out"], mma["in"], "MMA",
+              "input tiles  →  accumulator")
+
+    # One short leader to the pipe, rather than two long ones to the ports:
+    # the pipe spans both ports, and crossing leaders fought with the label.
+    mid = (tma["out"][1] + mma["in"][1]) / 2
+    lead_y = mid + 0.44   # above the MMA label, so the leader crosses nothing
+    ax.annotate("", xy=(cx + PIPE_W / 2 + 0.04, lead_y), xytext=(5.26, lead_y),
+                arrowprops=dict(arrowstyle="-|>", mutation_scale=13,
+                                linewidth=1.2, color=MUTED,
+                                shrinkA=2, shrinkB=0))
+    ax.text(5.40, lead_y + 0.17, "both ports green", ha="left", va="center",
+            fontsize=10.5, fontweight="bold", color=READY)
+    ax.text(5.40, lead_y - 0.15, "the MMA may start", ha="left", va="center",
+            fontsize=9.5, color=MUTED)
+
+    ax.text(0.30, 5.55, "An operation is a pipe between two ports",
+            ha="left", va="center", fontsize=15, fontweight="bold", color=INK)
+    ax.text(0.30, 5.18,
+            "from the source buffer's output port to the destination buffer's "
+            "input port",
+            ha="left", va="center", fontsize=10.5, color=MUTED)
+
+    legend(ax, 5.40, 1.62)
+    ax.text(0.30, -0.42,
+            "The pipe is only the connection — it holds no state of its own. "
+            "The operation may start only when the\n"
+            "output port feeding it and the input port it feeds are both "
+            "green, and it is the ports that then flip.",
+            ha="left", va="center", fontsize=9, color=INK, linespacing=1.5)
+
+    ax.set_xlim(0.0, 9.5)
+    ax.set_ylim(-0.85, 5.80)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
 FIGURES = {
     "buffer-kinds": buffer_kinds,
+    "operation-as-pipe": operation_as_pipe,
     "per-slot-initial-state": per_slot_initial_state,
 }
 
