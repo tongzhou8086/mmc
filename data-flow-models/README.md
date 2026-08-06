@@ -94,21 +94,26 @@ the pipe.
 
 ### `signal-flips-a-port`
 
-What a signal is, drawn on the same TMA → MMA pair as the pipe figure: before
-and after one MMA completes. The MMA consumed the TMA buffer, so a buffer-free
-signal is delivered there and flips both of its ports (ringed) — the output
-closes because the data is gone, the input opens so TMA may refill it.
+One full turn of the handshake, in three states side by side. **Data ready**
+opens the TMA buffer's output port, at which point both ends of the MMA pipe are
+green and the pipe appears; **buffer free** closes it again once the MMA has
+drained the buffer. The two signals are the labelled transitions between states,
+and the ports each one flips are ringed.
 
-The MMA buffer deliberately does *not* flip: it accumulates over every k-tile,
-and its data-ready signal fires only after the last one. (That reading is kept
-here rather than captioned on the figure, which carries no body text.)
+The pipe is drawn only while it could actually carry data — that is the firing
+rule made visible, rather than stated.
+
+The MMA buffer never flips here: it accumulates over every k-tile, so its own
+data-ready signal fires only after the last one. (That reading is kept here
+rather than captioned on the figure, which carries no body text.)
 
 ![A signal is what flips a port](figures/signal-flips-a-port.png)
 
-The same sequence is also generated as a GIF, `signal-flips-a-port.gif`, for
-posts that can show one. The static figure is the primary — it survives print,
-PDF and feed readers — and the two are generated from the same primitives, so
-they cannot drift apart.
+The same handshake is also generated as a GIF, `signal-flips-a-port.gif`, for
+posts that can show one. It walks the same states one at a time, with a caption
+narrating each. The static figure is the primary — it survives print, PDF and
+feed readers — and the two are generated from the same primitives, so they
+cannot drift apart.
 
 ![A signal is what flips a port, animated](figures/signal-flips-a-port.gif)
 

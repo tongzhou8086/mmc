@@ -336,54 +336,72 @@ def operation_as_pipe():
     return fig
 
 
-def _signal_panel(ax, x0, caption, tma_states, mma_states, signal=False):
-    """One TMA -> MMA pair, used twice side by side to show a signal landing."""
+def _signal_panel(ax, x0, caption, tma_states, mma_states,
+                  pipe=True, ringed=False):
+    """One TMA -> MMA pair, used three times across to show a handshake."""
     cx = x0 + 1.55
     tma = draw_buffer(ax, cx, 3.55, "TMA buffer", "SMEM  ·  A / B input tiles",
                       *tma_states, width=2.95)
     mma = draw_buffer(ax, cx, 1.30, "MMA buffer", "TMEM  ·  accumulator",
                       *mma_states, width=2.95)
-    draw_pipe(ax, tma["out"], mma["in"], "MMA", label_dx=0.58)
-    ax.text(cx, 4.62, caption, ha="center", va="center",
-            fontsize=10.5, fontweight="bold", color=INK)
-    if signal:
-        draw_signal(ax, (cx + 2.95 / 2, 3.55), "buffer free")
+    if pipe:
+        draw_pipe(ax, tma["out"], mma["in"], "MMA", label_dx=0.58)
+    if ringed:
         highlight_port(ax, *tma["in"])
         highlight_port(ax, *tma["out"])
+    ax.text(cx, 4.62, caption, ha="center", va="center",
+            fontsize=10.5, fontweight="bold", color=INK)
     return tma, mma
+
+
+def _signal_transition(ax, x_from, x_to, y, label, note):
+    """A dashed arrow between panels, named for the signal that causes it."""
+    ax.add_patch(FancyArrowPatch(
+        (x_from, y), (x_to, y), arrowstyle="-|>", mutation_scale=16,
+        linewidth=1.8, linestyle=(0, (4, 2.4)), color=SIGNAL,
+        shrinkA=0, shrinkB=0, zorder=4,
+    ))
+    mx = (x_from + x_to) / 2
+    ax.text(mx, y + 0.34, label, ha="center", va="center",
+            fontsize=10, fontweight="bold", color=SIGNAL)
+    ax.text(mx, y - 0.36, note, ha="center", va="center",
+            fontsize=8.5, color=MUTED)
 
 
 def signal_flips_a_port():
     """What a signal is: the only thing that changes a port's state.
 
-    Before and after one MMA completes. The MMA consumed the TMA buffer, so a
-    buffer-free signal lands on that buffer: its output port closes (the data is
-    gone) and its input port opens (it may be refilled).
+    One full turn of the handshake. Data ready opens the TMA buffer's output
+    port, at which point both ends of the MMA pipe are green and the pipe
+    appears; buffer free closes it again once the MMA has drained the buffer.
 
-    The MMA buffer deliberately does not flip - it accumulates over every k-tile,
-    so its data-ready signal fires only after the last one. That is explained in
-    the README rather than on the canvas, which stays uncluttered.
+    The pipe is drawn only while it could actually carry data, which is the
+    firing rule made visible. The MMA buffer never flips here - it accumulates
+    over every k-tile, so its data-ready signal fires only after the last one.
+    That reading lives in the README rather than on the canvas.
     """
-    fig, ax = plt.subplots(figsize=(11.5, 5.6))
+    fig, ax = plt.subplots(figsize=(12.8, 5.7))
 
-    _signal_panel(ax, 0.30, "while the MMA runs",
-                  (NOT_READY, READY), (READY, NOT_READY))
-    ax.annotate("", xy=(4.62, 2.60), xytext=(3.94, 2.60),
-                arrowprops=dict(arrowstyle="-|>", mutation_scale=16,
-                                linewidth=1.6, color=MUTED))
-    ax.text(4.28, 2.92, "MMA\ncompletes", ha="center", va="center",
-            fontsize=9, color=MUTED, linespacing=1.4)
-    _signal_panel(ax, 4.95, "after it completes",
-                  (READY, NOT_READY), (READY, NOT_READY), signal=True)
+    _signal_panel(ax, 0.30, "both buffers empty",
+                  (READY, NOT_READY), (READY, NOT_READY), pipe=False)
+    _signal_transition(ax, 3.50, 4.72, 2.42, "data ready",
+                       "TMA has filled it")
+    _signal_panel(ax, 4.80, "output open — the MMA runs",
+                  (NOT_READY, READY), (READY, NOT_READY), ringed=True)
+    _signal_transition(ax, 8.00, 9.22, 2.42, "buffer free",
+                       "the MMA has drained it")
+    _signal_panel(ax, 9.30, "flipped back — TMA may refill",
+                  (READY, NOT_READY), (READY, NOT_READY),
+                  pipe=False, ringed=True)
 
     ax.text(0.30, 5.72, "A signal is what flips a port",
             ha="left", va="center", fontsize=15, fontweight="bold", color=INK)
     ax.text(0.30, 5.35,
-            "each buffer takes two: buffer free opens its input and closes its "
-            "output, data ready does the opposite",
+            "each buffer takes two: data ready opens its output and closes its "
+            "input, buffer free does the opposite",
             ha="left", va="center", fontsize=10.5, color=MUTED)
 
-    ax.set_xlim(0.0, 11.6)
+    ax.set_xlim(0.0, 12.7)
     ax.set_ylim(0.30, 5.95)
     ax.set_aspect("equal")
     ax.axis("off")
@@ -391,17 +409,24 @@ def signal_flips_a_port():
     return fig
 
 
-def _signal_scene(tma_states, mma_states, step, signal=False, ringed=False):
-    """One frame of the signal animation: a single TMA -> MMA pair."""
+def _signal_scene(tma_states, mma_states, step, signal=None, ringed=False,
+                  pipe=True):
+    """One frame of the signal animation: a single TMA -> MMA pair.
+
+    The pipe is drawn only while it could actually carry data - that is, while
+    the TMA buffer's output port and the MMA buffer's input port are both green.
+    Seeing it appear and vanish is the firing rule made visible.
+    """
     fig, ax = plt.subplots(figsize=(7.3, 5.55))
     cx = 2.05
     tma = draw_buffer(ax, cx, 3.55, "TMA buffer", "SMEM  ·  A / B input tiles",
                       *tma_states, width=2.95)
     mma = draw_buffer(ax, cx, 1.30, "MMA buffer", "TMEM  ·  accumulator",
                       *mma_states, width=2.95)
-    draw_pipe(ax, tma["out"], mma["in"], "MMA", label_dx=0.58)
+    if pipe:
+        draw_pipe(ax, tma["out"], mma["in"], "MMA", label_dx=0.58)
     if signal:
-        draw_signal(ax, (cx + 2.95 / 2, 3.55), "buffer free")
+        draw_signal(ax, (cx + 2.95 / 2, 3.55), signal)
     if ringed:
         highlight_port(ax, *tma["in"])
         highlight_port(ax, *tma["out"])
@@ -420,26 +445,36 @@ def _signal_scene(tma_states, mma_states, step, signal=False, ringed=False):
     return fig
 
 
-# (states, caption, signal drawn, ports ringed, hold in ms)
+# One full turn of the handshake: data ready opens the TMA buffer's output and
+# the pipe appears; buffer free closes it again once the MMA has drained it.
+# (tma states, mma states, caption, signal label, ports ringed, pipe, hold ms)
 SIGNAL_FRAMES = [
-    ((NOT_READY, READY), (READY, NOT_READY),
-     "both ports green — the MMA may start", False, False, 1500),
-    ((NOT_READY, READY), (READY, NOT_READY),
-     "the MMA runs, draining the TMA buffer", False, False, 1200),
-    ((NOT_READY, READY), (READY, NOT_READY),
-     "it completes, and sends a buffer-free signal", True, False, 1500),
     ((READY, NOT_READY), (READY, NOT_READY),
-     "the signal flips both ports of that buffer", True, True, 1800),
+     "both buffers empty — no data for the MMA to read",
+     None, False, False, 1600),
     ((READY, NOT_READY), (READY, NOT_READY),
-     "output closed, input open — TMA may refill it", False, False, 1800),
+     "TMA finishes its load and signals data ready",
+     "data ready", False, False, 1600),
+    ((NOT_READY, READY), (READY, NOT_READY),
+     "the signal flips both ports: the output opens",
+     "data ready", True, True, 1900),
+    ((NOT_READY, READY), (READY, NOT_READY),
+     "both ports green — the MMA runs",
+     None, False, True, 1500),
+    ((NOT_READY, READY), (READY, NOT_READY),
+     "it completes and signals buffer free",
+     "buffer free", False, True, 1600),
+    ((READY, NOT_READY), (READY, NOT_READY),
+     "flipped back — the data is gone, TMA may refill",
+     "buffer free", True, False, 1900),
 ]
 
 
 def signal_animation(path, dpi=110):
     """Write the signal figure as a GIF, for posts that can show one."""
     frames, durations = [], []
-    for tma_states, mma_states, step, signal, ringed, hold in SIGNAL_FRAMES:
-        fig = _signal_scene(tma_states, mma_states, step, signal, ringed)
+    for tma_states, mma_states, step, signal, ringed, pipe, hold in SIGNAL_FRAMES:
+        fig = _signal_scene(tma_states, mma_states, step, signal, ringed, pipe)
         buf = io.BytesIO()
         # No bbox_inches="tight": every frame must come out the same size.
         fig.savefig(buf, format="png", dpi=dpi, facecolor="white")
