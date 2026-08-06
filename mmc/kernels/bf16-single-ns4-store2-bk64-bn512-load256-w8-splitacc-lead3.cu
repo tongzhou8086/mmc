@@ -23,24 +23,29 @@
 // the MMA side only the k == 0 iteration waits, panel by panel, interleaved with
 // that panel's MMA issue. Same idea as single-ns4-store3-bk128-bn384-splitacc2.
 //
-// This variant goes further: panel 0's accumulator is released a whole
-// panel-drain earlier than panel 1's, so instead of stalling on panel 1's free
-// barrier right after issuing panel 0's k=0 MMAs, the MMA warp runs panel 0
-// ahead by LEAD_K k-tiles. Panel 1 then replays those same k-tiles from the same
-// SMEM slots, which stay allocated because their buffer-free signals are held
-// back until both panels have consumed them. The k loop becomes a while loop so
+// This variant runs panel 0 ahead of panel 1. Panel 0's accumulator is released
+// a whole panel-drain before panel 1's, so from the second output tile on, the
+// MMA warp does not stall on panel 1's free barrier after panel 0's k=0 MMAs -
+// it keeps accumulating into panel 0 for LEAD_K=3 k-tiles, then replays the same
+// k-tiles into panel 1 once that barrier arrives. The k loop is a while loop so
 // the k == 0 iteration can advance k by more than one.
 //
-// LEAD_K=3 version of the run-ahead: each panel accumulates three k-tiles back
-// to back before the two return to lockstep. With NS=4 that pins three of the
-// four SMEM slots while it happens, leaving the TMA warp a single slot of
-// prefetch - the tradeoff this variant exists to measure. The per-panel loops
-// are written with a runtime bound so the lead depth is one constant.
+// The first output tile finds both panels already free, so there is no stall to
+// hide there and running ahead would only pin SMEM slots while the ring is still
+// filling. It takes the plain path, expressed as lead depth 1.
+//
+// Panel 1 must replay those k-tiles rather than skip them: only the first MMA
+// per panel overwrites, so skipping would drop them from panel 1's sum. A slot
+// is therefore released only once both panels have consumed it - its
+// buffer-free commit sits right after panel 1's MMAs for that slot, so it does
+// not wait on the rest of the replay. Up to LEAD_K slots of the NS-deep ring
+// are pinned while the lead is in flight.
 //
 // Adapted from bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc.cu, which
-// is otherwise identical. It does not yet
-// use cuda-mxfp8.cuh; the data-type-agnostic helpers will be split out of that
-// header and shared with the BF16 kernels separately.
+// is otherwise identical.
+//
+// It does not yet use cuda-mxfp8.cuh; the data-type-agnostic helpers will be
+// split out of that header and shared with the BF16 kernels separately.
 //
 // Launch contract, mirrored by Runtime.launch_bf16:
 //   grid    = sm_count - sm_count % CTA_GROUP   (persistent, EPILOGUE_OVERLAP)
@@ -489,9 +494,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
             uint32_t compute_data_ready_phase[NS] = {};
             uint32_t tmem_panel_free_phase[2] = {};
             long gk = 0;
-            // Panel 0 runs this many k-tiles before panel 1 starts. LEAD_K slots
-            // of the NS-deep SMEM ring are pinned while that happens, so the TMA
-            // warp keeps NS - LEAD_K slots of prefetch.
+            // How many k-tiles each panel accumulates back to back at k == 0.
             constexpr int LEAD_K = 3;
             static_assert(LEAD_K < NS, "the lead must leave the TMA warp some prefetch");
             for (int ti = 0; ti < num_my; ti++) {
@@ -500,13 +503,14 @@ __device__ __forceinline__ void matmul_cluster_impl(
                 int k = 0;
                 while (k < num_k) {
                     if (k == 0) {
-                        // Panel 0's columns left TMEM a whole panel-drain before
-                        // panel 1's, so rather than stall on panel 1's free
-                        // barrier here, keep accumulating into panel 0. Panel 1
-                        // replays the same slots below, which is why their
-                        // buffer-free signals wait until the very end.
-                        // A short tile may hold fewer k-tiles than the lead.
-                        const int lead = min(num_k, LEAD_K);
+                        // Lead depth 1 is the plain path: wait for panel 0, issue
+                        // its MMAs, wait for panel 1, issue its MMAs. The first
+                        // output tile uses it because both panels are already
+                        // free there - nothing to overlap, and pinning slots
+                        // while the SMEM ring is still filling only costs
+                        // prefetch. A short tile also cannot lead further than
+                        // it has k-tiles.
+                        const int lead = (ti == 0) ? 1 : min(num_k, LEAD_K);
 
                         wait_phase(
                             (uint32_t)__cvta_generic_to_shared(&mbar_tmem_panel_free[0]),
@@ -532,6 +536,13 @@ __device__ __forceinline__ void matmul_cluster_impl(
                         tmem_panel_free_phase[1] ^= 1;
                         tcgen05_fence_after_thread_sync();
 
+                        // A slot is free once both panels have consumed it, so
+                        // its buffer-free commit goes right after panel 1's MMAs
+                        // for that slot rather than after the whole replay:
+                        // tcgen05.commit signals on completion of the MMAs issued
+                        // before it, so slot j is released without waiting for
+                        // slots j+1.. to finish. That hands slots back to the TMA
+                        // warp as early as the dependency allows.
                         for (int j = 0; j < lead; j++) {
                             const int s = (gk + j) % NS;
                             issue_mma_chain(d_tmem + BN_PANEL,
@@ -539,12 +550,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
                                             B_base(s) + BN_PANEL_LOCAL * BK * BF16_BYTES,
                                             idesc,
                                             /*first_k_tile=*/ j == 0);
-                        }
-
-                        // Both panels have consumed these slots now, so release
-                        // them together.
-                        for (int j = 0; j < lead; j++) {
-                            const int s = (gk + j) % NS;
                             signal_on_mma_completion(
                                 (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[s]),
                                 cta_mask);
