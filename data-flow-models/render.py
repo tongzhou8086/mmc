@@ -76,22 +76,27 @@ def draw_operation(ax, src_port, dst_port, label, note=None):
                 fontsize=8.5, color=MUTED, zorder=4)
 
 
-def legend(ax, x, y):
-    """Explain what the two port colors mean in each port position."""
+def legend(ax, x, y, title="Port states"):
+    """Explain what the two port colors mean in each port position.
+
+    Laid out as a column, so it can sit beside the diagram rather than under it.
+    """
     rows = [
         (READY, "input port", "buffer is free to be overwritten"),
         (NOT_READY, "input port", "buffer still holds data in use"),
         (READY, "output port", "data is ready to be consumed"),
         (NOT_READY, "output port", "data is not ready yet"),
     ]
+    ax.text(x - 0.02, y + 0.52, title, ha="left", va="center",
+            fontsize=10, fontweight="bold", color=INK)
     for i, (color, role, meaning) in enumerate(rows):
-        yy = y - i * 0.34
+        yy = y - i * 0.46
         ax.add_patch(Circle((x, yy), PORT_R * 0.8, facecolor=color,
                             edgecolor=INK, linewidth=1.0, zorder=5))
-        ax.text(x + 0.28, yy, role, ha="left", va="center",
+        ax.text(x + 0.26, yy + 0.11, role, ha="left", va="center",
                 fontsize=9, fontweight="bold", color=INK)
-        ax.text(x + 1.62, yy, meaning, ha="left", va="center",
-                fontsize=9, color=MUTED)
+        ax.text(x + 0.26, yy - 0.13, meaning, ha="left", va="center",
+                fontsize=8.5, color=MUTED)
 
 
 def per_slot_initial_state():
@@ -101,13 +106,13 @@ def per_slot_initial_state():
     to hand on (output red). Neither operation can fire, because each needs its
     source's output port to turn green first.
     """
-    fig, ax = plt.subplots(figsize=(7.6, 7.6))
+    fig, ax = plt.subplots(figsize=(9.0, 5.6))
 
-    tma = draw_buffer(ax, 2.35, 5.35, "TMA buffer",
+    tma = draw_buffer(ax, 2.35, 4.85, "TMA buffer",
                       "SMEM  ·  A / B input tiles", READY, NOT_READY)
-    mma = draw_buffer(ax, 2.35, 3.30, "MMA buffer",
+    mma = draw_buffer(ax, 2.35, 3.00, "MMA buffer",
                       "TMEM  ·  accumulator", READY, NOT_READY)
-    store = draw_buffer(ax, 2.35, 1.25, "Store buffer",
+    store = draw_buffer(ax, 2.35, 1.15, "Store buffer",
                         "SMEM  ·  epilogue staging", READY, NOT_READY)
 
     draw_operation(ax, tma["out"], mma["in"], "MMA",
@@ -115,21 +120,21 @@ def per_slot_initial_state():
     draw_operation(ax, mma["out"], store["in"], "Epilogue",
                    "accumulator  →  staged output")
 
-    ax.text(0.30, 7.15, "Per-slot data flow", ha="left", va="center",
+    ax.text(0.30, 6.30, "Per-slot data flow", ha="left", va="center",
             fontsize=15, fontweight="bold", color=INK)
-    ax.text(0.30, 6.76, "initial state — one buffer of each kind",
+    ax.text(0.30, 5.93, "initial state — one buffer of each kind",
             ha="left", va="center", fontsize=10.5, color=MUTED)
 
-    legend(ax, 0.30, 0.16)
-    ax.text(0.30, -1.42,
+    legend(ax, 5.15, 4.35)
+    ax.text(0.30, 0.06,
             "An operation may fire only when its source output port and its "
             "destination input port are both green.\n"
             "Synchronization is therefore just the flipping of port colors: "
             "each mbarrier toggles one port.",
             ha="left", va="center", fontsize=9, color=INK, linespacing=1.5)
 
-    ax.set_xlim(0.0, 7.4)
-    ax.set_ylim(-1.85, 7.45)
+    ax.set_xlim(0.0, 9.1)
+    ax.set_ylim(-0.35, 6.60)
     ax.set_aspect("equal")
     ax.axis("off")
     fig.tight_layout()
