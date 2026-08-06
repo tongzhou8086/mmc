@@ -100,7 +100,8 @@ signal is delivered there and flips both of its ports (ringed) — the output
 closes because the data is gone, the input opens so TMA may refill it.
 
 The MMA buffer deliberately does *not* flip: it accumulates over every k-tile,
-and its data-ready signal fires only after the last one.
+and its data-ready signal fires only after the last one. (That reading is kept
+here rather than captioned on the figure, which carries no body text.)
 
 ![A signal is what flips a port](figures/signal-flips-a-port.png)
 

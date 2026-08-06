@@ -359,8 +359,12 @@ def signal_flips_a_port():
     Before and after one MMA completes. The MMA consumed the TMA buffer, so a
     buffer-free signal lands on that buffer: its output port closes (the data is
     gone) and its input port opens (it may be refilled).
+
+    The MMA buffer deliberately does not flip - it accumulates over every k-tile,
+    so its data-ready signal fires only after the last one. That is explained in
+    the README rather than on the canvas, which stays uncluttered.
     """
-    fig, ax = plt.subplots(figsize=(11.5, 5.9))
+    fig, ax = plt.subplots(figsize=(11.5, 5.6))
 
     _signal_panel(ax, 0.30, "while the MMA runs",
                   (NOT_READY, READY), (READY, NOT_READY))
@@ -379,18 +383,8 @@ def signal_flips_a_port():
             "output, data ready does the opposite",
             ha="left", va="center", fontsize=10.5, color=MUTED)
 
-    ax.text(0.30, -0.30,
-            "The MMA consumed the TMA buffer, so a buffer-free signal is "
-            "delivered there. One signal flips both of that buffer's ports "
-            "(ringed): the output closes — the data is gone —\n"
-            "and the input opens, so TMA may refill it. "
-            "The MMA buffer does not flip here: it accumulates over "
-            "every k-tile, and its data-ready signal fires only after the last "
-            "one.",
-            ha="left", va="center", fontsize=9, color=INK, linespacing=1.5)
-
     ax.set_xlim(0.0, 11.6)
-    ax.set_ylim(-0.72, 5.95)
+    ax.set_ylim(0.30, 5.95)
     ax.set_aspect("equal")
     ax.axis("off")
     fig.tight_layout()
