@@ -607,14 +607,16 @@ BN256_SIZES = [
 ]
 
 
-def _bn256_layout(ax, states=None, active=(), x0=2.30, mma_sections=1):
+def _bn256_layout(ax, states=None, active=(), x0=2.30, sections=None):
     """Draw every buffer of the BN=256 pipeline, sized by capacity.
 
     `states` maps (row, index) to (input, output); anything absent is an empty
     buffer, i.e. free to overwrite with nothing to hand on. `active` marks the
-    buffers an operation is touching.
+    buffers an operation is touching. `sections` maps (row, index) to a section
+    count, for a buffer that is being drained a section at a time.
     """
     states = states or {}
+    sections = sections or {}
     placed = {}
     for ri, (name, count, kb, cy, labels) in enumerate(BN256_ROWS):
         w = KB32_W * kb / 32.0
@@ -624,7 +626,7 @@ def _bn256_layout(ax, states=None, active=(), x0=2.30, mma_sections=1):
             placed[(ri, i)] = draw_slot(
                 ax, cx, cy, kb, labels[i], ins, outs,
                 active=(ri, i) in active,
-                sections=mma_sections if ri == 1 else 1)
+                sections=sections.get((ri, i), 1))
         ax.text(x0 - 0.30, cy, name, ha="right", va="center",
                 fontsize=11, fontweight="bold", color=INK)
     return placed
@@ -746,11 +748,12 @@ def bn256_state4_data_ready_and_ld():
     reading slot 2 - and the load has moved on to slot 3. This is the reason
     there are two accumulators: one drains while the other fills.
 
-    From this state on the accumulators are drawn divided into four 64-column
-    sections, because that is how they drain: one section is exactly the 32 KB
-    the register buffer holds, so tcgen05.ld takes them one at a time - here,
-    section 0. Each section carries its own output port for that reason; the
-    input stays single, since the MMA fills the accumulator as a whole.
+    The accumulator being drained is drawn divided into four 64-column sections,
+    because that is how it drains: one section is exactly the 32 KB the register
+    buffer holds, so tcgen05.ld takes them one at a time - here, section 0. Each
+    section carries its own output port for that reason. The accumulator that is
+    still accumulating is not divided: sections describe how a buffer drains,
+    and that one is being filled as a whole.
     """
     fig, ax = plt.subplots(figsize=(13.0, 7.4))
     states = {
@@ -758,10 +761,12 @@ def bn256_state4_data_ready_and_ld():
         (1, 0): (NOT_READY, READY),   # accumulator 0 complete: data ready fired
     }
     # BN=256 drains in 64-column sections, and one section is exactly the 32 KB
-    # the register buffer holds - so the accumulator is drawn divided into four.
+    # the register buffer holds - so the accumulator being drained is drawn
+    # divided into four. The one that is accumulating is not: sections are a
+    # property of how a buffer drains, and it is being filled as a whole.
     placed = _bn256_layout(ax, states,
                            active={(0, 2), (0, 3), (1, 0), (1, 1), (2, 0)},
-                           mma_sections=4)
+                           sections={(1, 0): 4})
     draw_source_pipe(ax, placed[(0, 3)]["in"], "TMA load")
     draw_pipe_between(ax, placed[(1, 0)]["outs"][0], placed[(2, 0)]["in"],
                       "tcgen05.ld", label_dx=0.34)
