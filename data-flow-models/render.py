@@ -616,9 +616,10 @@ def _bn256_layout(ax, states=None, active=(), x0=2.30):
 def _bn256_chrome(ax, state, subtitle, note):
     """Title, size legend and footnote shared by every BN=256 state figure."""
     ax.text(0.30, 8.30,
-            "BM=128 · BN=256 · BK=64 pipeline — K=128 for illustration",
+            "BM=128 · BN=256 · BK=64 pipeline — K=128 for illustration "
+            f"— State {state}",
             ha="left", va="center", fontsize=15, fontweight="bold", color=INK)
-    ax.text(0.30, 7.91, f"state {state} — {subtitle}", ha="left", va="center",
+    ax.text(0.30, 7.91, subtitle, ha="left", va="center",
             fontsize=10.5, color=MUTED)
     lx = 12.05
     ax.text(lx, 6.75, "Buffer sizes", ha="left", va="center",
