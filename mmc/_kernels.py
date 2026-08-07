@@ -117,6 +117,22 @@ BF16_KERNELS = (
         "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-lead3",
         64, 384, 230400, m_multiple=256, n_multiple=512,
     ),
+    # Split data-ready as well as split accumulator-free: panel 0's data-ready
+    # fires right after its last-k MMAs, before panel 1's are issued, so the
+    # epilogue drains panel 0 while panel 1 is still accumulating.
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-splitdr",
+        64, 384, 230400, m_multiple=256, n_multiple=512,
+    ),
+    # The same split data-ready applied to the two run-ahead variants.
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-lead2-splitdr",
+        64, 384, 230400, m_multiple=256, n_multiple=512,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-lead3-splitdr",
+        64, 384, 230400, m_multiple=256, n_multiple=512,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 
@@ -126,5 +142,5 @@ BF16_KERNEL_BY_NAME = {kernel.name: kernel for kernel in BF16_KERNELS}
 # set's version invalidates only that set's cached winners, and the two sets'
 # winners for the same shape cannot collide. Keep these distinct.
 MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
-BF16_KERNEL_SET_VERSION = "sm100a-bf16-v6"
+BF16_KERNEL_SET_VERSION = "sm100a-bf16-v8"
 assert MXFP8_KERNEL_SET_VERSION != BF16_KERNEL_SET_VERSION
