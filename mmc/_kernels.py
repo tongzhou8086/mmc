@@ -124,6 +124,15 @@ BF16_KERNELS = (
         "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-splitdr",
         64, 384, 230400, m_multiple=256, n_multiple=512,
     ),
+    # The same split data-ready applied to the two run-ahead variants.
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-lead2-splitdr",
+        64, 384, 230400, m_multiple=256, n_multiple=512,
+    ),
+    KernelSpec(
+        "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-lead3-splitdr",
+        64, 384, 230400, m_multiple=256, n_multiple=512,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 
