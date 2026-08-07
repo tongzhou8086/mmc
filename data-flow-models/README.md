@@ -108,14 +108,15 @@ first k-tile: the ring runs ahead across the tile boundary.
 
 ### `bn256-state4-data-ready-and-ld`
 
-State 4: the last k-tile finished, so a data-ready signal fired on MMA buffer 0.
-Its output port is green and its input red — it is full, and nothing may
-overwrite it until the drain is done. That is what lets `tcgen05.ld` run,
-pulling the accumulator into registers.
+State 4: three operations running at once. The last k-tile of the first output
+tile finished, so a data-ready signal fired on MMA buffer 0 — its output port is
+green and its input red, since it is full and nothing may overwrite it until the
+drain is done. That is what lets `tcgen05.ld` run, pulling the accumulator into
+registers.
 
-The load has not stopped: slot 2 is full and it has moved on to slot 3. MMA
-buffer 1 is still free, so the next output tile's MMA can start while this one
-drains — which is the reason there are two accumulators at all.
+Meanwhile the next output tile's MMA has already started on **MMA buffer 1**,
+reading slot 2, and the load has moved on to slot 3. This is the reason there
+are two accumulators: one drains while the other fills.
 
 ![BN=256 pipeline, state 4](figures/bn256-state4-data-ready-and-ld.png)
 
