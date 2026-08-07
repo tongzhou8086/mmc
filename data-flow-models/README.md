@@ -62,6 +62,21 @@ flips when.
 
 ## Figures
 
+### `bn256-state1-tma-load`
+
+The whole BN=256 double-buffered pipeline, drawn to scale: six 32 KB TMA slots,
+two 128 KB TMEM accumulators, one 32 KB register buffer for the `tcgen05.ld`
+results, two 16 KB store buffers. Box area is proportional to capacity, which is
+the point of drawing them together — the two accumulators outweigh all six input
+slots put together.
+
+State 1 of a sequence: only the TMA load is running. Nothing has produced
+anything yet, so every output port is red and no operation *between* buffers can
+fire. The one thing that can run is the load from memory, drawn as a pipe with
+no source buffer — global memory is not a buffer in this model.
+
+![BN=256 pipeline, state 1](figures/bn256-state1-tma-load.png)
+
 ### `buffer-kinds`
 
 The four kinds of buffer in a 2x2 grid, with no operations between them. They

@@ -336,6 +336,62 @@ def operation_as_pipe():
     return fig
 
 
+# One 32 KB buffer is this wide; every other box is scaled from it, so box area
+# is proportional to the memory the buffer actually occupies.
+KB32_W = 1.15
+SLOT_H = 0.90
+
+
+def draw_slot(ax, cx, cy, kb, label, input_state, output_state):
+    """Draw one buffer sized by its capacity, with a port at each end."""
+    w = KB32_W * kb / 32.0
+    ax.add_patch(FancyBboxPatch(
+        (cx - w / 2, cy - SLOT_H / 2), w, SLOT_H,
+        boxstyle="round,pad=0.01,rounding_size=0.08",
+        linewidth=1.4, edgecolor=BOX_EDGE, facecolor=BOX_FACE, zorder=2,
+    ))
+    if label:
+        ax.text(cx, cy, label, ha="center", va="center", fontsize=9.5,
+                fontweight="bold", color=INK, zorder=4)
+    top, bottom = (cx, cy + SLOT_H / 2), (cx, cy - SLOT_H / 2)
+    draw_port(ax, *top, input_state, radius=0.105)
+    draw_port(ax, *bottom, output_state, radius=0.105)
+    return {"in": top, "out": bottom, "w": w}
+
+
+def draw_row(ax, x0, cy, count, kb, labels, input_state, output_state, gap=0.22):
+    """Lay out a row of identically sized buffers, left-aligned at x0."""
+    w = KB32_W * kb / 32.0
+    slots = []
+    for i in range(count):
+        cx = x0 + w / 2 + i * (w + gap)
+        slots.append(draw_slot(ax, cx, cy, kb, labels[i] if labels else None,
+                               input_state, output_state))
+    return slots
+
+
+def draw_source_pipe(ax, dst_port, label, length=1.15):
+    """A pipe with no source buffer - data arriving from memory.
+
+    Global memory is deliberately not a buffer in this model, so a load from it
+    is drawn as a pipe that simply begins.
+    """
+    x, y = dst_port
+    top = y + length
+    ax.add_patch(FancyBboxPatch(
+        (x - PIPE_W / 2, y), PIPE_W, length,
+        boxstyle="round,pad=0,rounding_size=0.06",
+        linewidth=1.5, edgecolor=PIPE_EDGE, facecolor=PIPE_FACE, zorder=1,
+    ))
+    ax.add_patch(FancyArrowPatch(
+        (x, top - 0.28), (x, y + 0.22), arrowstyle="-|>", mutation_scale=15,
+        linewidth=1.6, color=PIPE_EDGE, shrinkA=0, shrinkB=0, zorder=3,
+    ))
+    ax.text(x + PIPE_W / 2 + 0.18, top - 0.30, label, ha="left", va="center",
+            fontsize=11, fontweight="bold", color=INK, zorder=4)
+
+
+
 def _signal_panel(ax, x0, caption, tma_states, mma_states,
                   pipe=True, ringed=False):
     """One TMA -> MMA pair, used three times across to show a handshake."""
@@ -487,8 +543,73 @@ def signal_animation(path, dpi=110):
     return path
 
 
+def bn256_state1_tma_load():
+    """BN=256 double-buffered pipeline, state 1: only the TMA load is running.
+
+    Every buffer of the kernel, drawn to scale - box area is proportional to the
+    memory each one occupies. Six 32 KB TMA slots, two 128 KB TMEM accumulators,
+    one 32 KB register buffer for the tcgen05.ld results, two 16 KB store
+    buffers.
+
+    Nothing has produced anything yet, so every output port is red and no
+    operation between buffers can fire. The one thing that can run is the load
+    from memory, drawn as a pipe with no source buffer: global memory is not a
+    buffer in this model.
+    """
+    fig, ax = plt.subplots(figsize=(13.0, 7.1))
+
+    x0 = 2.30
+    rows = [
+        (5.55, 6, 32, [str(i) for i in range(6)], "TMA"),
+        (4.10, 2, 128, ["0", "1"], "MMA"),
+        (2.65, 1, 32, [""], "tcgen05.ld"),
+        (1.20, 2, 16, ["0", "1"], "Store"),
+    ]
+    placed = []
+    for cy, count, kb, labels, name in rows:
+        placed.append(draw_row(ax, x0, cy, count, kb, labels, READY, NOT_READY))
+        ax.text(x0 - 0.30, cy, name, ha="right", va="center",
+                fontsize=11, fontweight="bold", color=INK)
+
+    draw_source_pipe(ax, placed[0][0]["in"], "TMA load")
+
+    ax.text(0.30, 7.95, "BN=256 double-buffered pipeline — state 1",
+            ha="left", va="center", fontsize=15, fontweight="bold", color=INK)
+    ax.text(0.30, 7.56,
+            "only the TMA load is running; every buffer is still empty",
+            ha="left", va="center", fontsize=10.5, color=MUTED)
+
+    lx = 12.05
+    ax.text(lx, 6.35, "Buffer sizes", ha="left", va="center",
+            fontsize=10.5, fontweight="bold", color=INK)
+    sizes = [
+        (5.55, "6 x 32 KB", "SMEM  ·  192 KB"),
+        (4.10, "2 x 128 KB", "TMEM  ·  256 KB"),
+        (2.65, "1 x 32 KB", "RMEM"),
+        (1.20, "2 x 16 KB", "SMEM  ·  32 KB"),
+    ]
+    for cy, size, where in sizes:
+        ax.text(lx, cy + 0.15, size, ha="left", va="center",
+                fontsize=10, fontweight="bold", color=INK)
+        ax.text(lx, cy - 0.16, where, ha="left", va="center",
+                fontsize=8.5, color=MUTED)
+
+    ax.text(0.30, 0.28,
+            "Box area is proportional to capacity, so the two accumulators "
+            "outweigh all six input slots put together.",
+            ha="left", va="center", fontsize=9, color=INK)
+
+    ax.set_xlim(0.0, 14.9)
+    ax.set_ylim(0.05, 8.15)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
 FIGURES = {
     "buffer-kinds": buffer_kinds,
+    "bn256-state1-tma-load": bn256_state1_tma_load,
     "operation-as-pipe": operation_as_pipe,
     "signal-flips-a-port": signal_flips_a_port,
     "per-slot-initial-state": per_slot_initial_state,
