@@ -717,11 +717,40 @@ def bn256_state3_ring_advances():
     return fig
 
 
+def bn256_state4_data_ready_and_ld():
+    """State 4: the accumulator is complete and tcgen05.ld drains it.
+
+    The last k-tile finished, so a data-ready signal fired on MMA buffer 0: its
+    output port is green and its input red - it is full, and nothing may
+    overwrite it until the drain is done. That is what lets tcgen05.ld run,
+    pulling the accumulator into registers.
+
+    The load has not stopped: slot 2 is full and it has moved on to slot 3.
+    """
+    fig, ax = plt.subplots(figsize=(13.0, 7.4))
+    states = {
+        (0, 2): (NOT_READY, READY),   # slot 2 full, waiting for the next tile
+        (1, 0): (NOT_READY, READY),   # accumulator complete: data ready fired
+    }
+    placed = _bn256_layout(ax, states, active={(0, 3), (1, 0), (2, 0)})
+    draw_source_pipe(ax, placed[(0, 3)]["in"], "TMA load")
+    draw_pipe_between(ax, placed[(1, 0)]["out"], placed[(2, 0)]["in"],
+                      "tcgen05.ld", label_dx=0.34)
+    _bn256_chrome(
+        ax, 4, "the accumulator is complete, and tcgen05.ld drains it",
+        "MMA buffer 0 took a data-ready signal, so its output opened and its "
+        "input closed. MMA buffer 1 is still free, so the next output tile's "
+        "MMA can start while this one drains.")
+    fig.tight_layout()
+    return fig
+
+
 FIGURES = {
     "buffer-kinds": buffer_kinds,
     "bn256-state1-tma-load": bn256_state1_tma_load,
     "bn256-state2-tma-and-mma": bn256_state2_tma_and_mma,
     "bn256-state3-ring-advances": bn256_state3_ring_advances,
+    "bn256-state4-data-ready-and-ld": bn256_state4_data_ready_and_ld,
     "operation-as-pipe": operation_as_pipe,
     "signal-flips-a-port": signal_flips_a_port,
     "per-slot-initial-state": per_slot_initial_state,
