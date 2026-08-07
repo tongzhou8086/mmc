@@ -22,6 +22,15 @@ So synchronization is nothing but flipping port states: every mbarrier in the
 kernel toggles one port, and a stalled operation is one whose two ports are not
 both green yet.
 
+The BN=256 state figures apply that model to a whole pipeline. Overlap between
+the hardware engines is the whole point of the design, and the states show which
+engines overlap and what lets them - the dependency structure that makes each
+operation legal to run when it does.
+
+What they do not show is duration. The model has no time axis, and without
+instrumentation there is no basis for drawing exact overlap, so where an
+operation is advanced between states that spacing is illustrative.
+
 Usage:  python data-flow-models/render.py [--outdir DIR]
 """
 
@@ -676,8 +685,15 @@ def _bn256_chrome(ax, state, subtitle, note):
         ax.text(lx, cy - 0.16, where, ha="left", va="center",
                 fontsize=8.5, color=MUTED)
     ax.text(0.30, -0.36, note, ha="left", va="center", fontsize=9, color=INK)
+    # The model has no time axis: it constrains ordering, not duration. Saying
+    # so on every state keeps the sequence from implying a timeline it cannot
+    # support - without instrumentation there is no basis for exact overlap.
+    ax.text(0.30, -0.68,
+            "Shows which engines overlap and what lets them — the point of a "
+            "pipeline. Not a timeline: durations are not to scale.",
+            ha="left", va="center", fontsize=8.5, color=MUTED)
     ax.set_xlim(0.0, 14.9)
-    ax.set_ylim(-0.68, 8.50)
+    ax.set_ylim(-1.00, 8.50)
     ax.set_aspect("equal")
     ax.axis("off")
 

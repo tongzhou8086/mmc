@@ -62,6 +62,15 @@ flips when.
 
 ## Figures
 
+The six `bn256-state*` figures walk a whole pipeline. Overlap between the
+hardware engines is the point of the design, and these show which engines
+overlap and what lets them — the dependency structure that makes each operation
+legal to run when it does.
+
+What they do not show is duration. The model has no time axis, and without
+instrumentation there is no basis for drawing exact overlap, so where an
+operation is advanced between states that spacing is illustrative.
+
 ### `bn256-state1-tma-load`
 
 The whole BM=128 / BN=256 / BK=64 pipeline, drawn to scale: six 32 KB TMA slots,
