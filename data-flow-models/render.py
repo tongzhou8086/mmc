@@ -342,7 +342,8 @@ KB32_W = 1.15
 SLOT_H = 0.90
 
 
-def draw_slot(ax, cx, cy, kb, label, input_state, output_state, active=False):
+def draw_slot(ax, cx, cy, kb, label, input_state, output_state, active=False,
+              sections=1):
     """Draw one buffer sized by its capacity, with a port at each end.
 
     `active` tints the box in the pipe colour, marking the buffers an operation
@@ -359,10 +360,24 @@ def draw_slot(ax, cx, cy, kb, label, input_state, output_state, active=False):
     if label:
         ax.text(cx, cy, label, ha="center", va="center", fontsize=9.5,
                 fontweight="bold", color=INK, zorder=4)
-    top, bottom = (cx, cy + SLOT_H / 2), (cx, cy - SLOT_H / 2)
+
+    # A sectioned buffer is drained a section at a time, so each section gets
+    # its own output port; the input stays single, since it is filled as a whole.
+    top = (cx, cy + SLOT_H / 2)
     draw_port(ax, *top, input_state, radius=0.105)
-    draw_port(ax, *bottom, output_state, radius=0.105)
-    return {"in": top, "out": bottom, "w": w}
+    sec_w = w / sections
+    outs = []
+    for i in range(sections):
+        sx = cx - w / 2 + sec_w * (i + 0.5)
+        if i:
+            ax.plot([cx - w / 2 + sec_w * i] * 2,
+                    [cy - SLOT_H / 2, cy + SLOT_H / 2],
+                    color=PIPE_EDGE if active else BOX_EDGE,
+                    linewidth=1.0, linestyle=(0, (3, 2)), zorder=3)
+        outs.append((sx, cy - SLOT_H / 2))
+        draw_port(ax, sx, cy - SLOT_H / 2, output_state, radius=0.105)
+    return {"in": top, "out": outs[0] if sections == 1 else (cx, cy - SLOT_H / 2),
+            "outs": outs, "w": w}
 
 
 def draw_row(ax, x0, cy, count, kb, labels, input_state, output_state, gap=0.22):
@@ -592,7 +607,7 @@ BN256_SIZES = [
 ]
 
 
-def _bn256_layout(ax, states=None, active=(), x0=2.30):
+def _bn256_layout(ax, states=None, active=(), x0=2.30, mma_sections=1):
     """Draw every buffer of the BN=256 pipeline, sized by capacity.
 
     `states` maps (row, index) to (input, output); anything absent is an empty
@@ -606,8 +621,10 @@ def _bn256_layout(ax, states=None, active=(), x0=2.30):
         for i in range(count):
             cx = x0 + w / 2 + i * (w + 0.22)
             ins, outs = states.get((ri, i), (READY, NOT_READY))
-            placed[(ri, i)] = draw_slot(ax, cx, cy, kb, labels[i], ins, outs,
-                                        active=(ri, i) in active)
+            placed[(ri, i)] = draw_slot(
+                ax, cx, cy, kb, labels[i], ins, outs,
+                active=(ri, i) in active,
+                sections=mma_sections if ri == 1 else 1)
         ax.text(x0 - 0.30, cy, name, ha="right", va="center",
                 fontsize=11, fontweight="bold", color=INK)
     return placed
@@ -728,16 +745,25 @@ def bn256_state4_data_ready_and_ld():
     Meanwhile the next output tile's MMA has already started, on MMA buffer 1,
     reading slot 2 - and the load has moved on to slot 3. This is the reason
     there are two accumulators: one drains while the other fills.
+
+    From this state on the accumulators are drawn divided into four 64-column
+    sections, because that is how they drain: one section is exactly the 32 KB
+    the register buffer holds, so tcgen05.ld takes them one at a time - here,
+    section 0. Each section carries its own output port for that reason; the
+    input stays single, since the MMA fills the accumulator as a whole.
     """
     fig, ax = plt.subplots(figsize=(13.0, 7.4))
     states = {
         (0, 2): (NOT_READY, READY),   # slot 2 full, feeding the next tile's MMA
         (1, 0): (NOT_READY, READY),   # accumulator 0 complete: data ready fired
     }
+    # BN=256 drains in 64-column sections, and one section is exactly the 32 KB
+    # the register buffer holds - so the accumulator is drawn divided into four.
     placed = _bn256_layout(ax, states,
-                           active={(0, 2), (0, 3), (1, 0), (1, 1), (2, 0)})
+                           active={(0, 2), (0, 3), (1, 0), (1, 1), (2, 0)},
+                           mma_sections=4)
     draw_source_pipe(ax, placed[(0, 3)]["in"], "TMA load")
-    draw_pipe_between(ax, placed[(1, 0)]["out"], placed[(2, 0)]["in"],
+    draw_pipe_between(ax, placed[(1, 0)]["outs"][0], placed[(2, 0)]["in"],
                       "tcgen05.ld", label_dx=0.34)
     draw_pipe_between(ax, placed[(0, 2)]["out"], placed[(1, 1)]["in"], "MMA",
                       label_dx=0.34)

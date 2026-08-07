@@ -118,6 +118,12 @@ Meanwhile the next output tile's MMA has already started on **MMA buffer 1**,
 reading slot 2, and the load has moved on to slot 3. This is the reason there
 are two accumulators: one drains while the other fills.
 
+From this state on the accumulators are drawn divided into four 64-column
+sections, because that is how they drain: one section is exactly the 32 KB the
+register buffer holds, so `tcgen05.ld` takes them one at a time — here, section
+0. Each section carries its own output port for that reason, while the input
+stays single, since the MMA fills the accumulator as a whole.
+
 ![BN=256 pipeline, state 4](figures/bn256-state4-data-ready-and-ld.png)
 
 ### `buffer-kinds`
