@@ -77,6 +77,19 @@ no source buffer — global memory is not a buffer in this model.
 
 ![BN=256 pipeline, state 1](figures/bn256-state1-tma-load.png)
 
+### `bn256-state2-tma-and-mma`
+
+State 2: the TMA load and the first MMA run at the same time. Slot 0 is full, so
+its output port is green and the MMA can read it, while the load has moved on to
+slot 1 — the overlap the multi-stage ring exists for. Buffers an operation is
+touching are tinted in the pipe colour.
+
+The MMA buffer's ports do not change while it accumulates: its input stays green
+because the MMA keeps writing to it, and its output stays red until the last
+k-tile of the output tile is in.
+
+![BN=256 pipeline, state 2](figures/bn256-state2-tma-and-mma.png)
+
 ### `buffer-kinds`
 
 The four kinds of buffer in a 2x2 grid, with no operations between them. They

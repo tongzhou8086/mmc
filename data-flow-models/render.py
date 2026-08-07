@@ -33,7 +33,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle, FancyArrowPatch, FancyBboxPatch
+from matplotlib.patches import Circle, FancyArrowPatch, FancyBboxPatch, Polygon
 from PIL import Image
 
 
@@ -342,13 +342,19 @@ KB32_W = 1.15
 SLOT_H = 0.90
 
 
-def draw_slot(ax, cx, cy, kb, label, input_state, output_state):
-    """Draw one buffer sized by its capacity, with a port at each end."""
+def draw_slot(ax, cx, cy, kb, label, input_state, output_state, active=False):
+    """Draw one buffer sized by its capacity, with a port at each end.
+
+    `active` tints the box in the pipe colour, marking the buffers an operation
+    is touching in the state being drawn.
+    """
     w = KB32_W * kb / 32.0
     ax.add_patch(FancyBboxPatch(
         (cx - w / 2, cy - SLOT_H / 2), w, SLOT_H,
         boxstyle="round,pad=0.01,rounding_size=0.08",
-        linewidth=1.4, edgecolor=BOX_EDGE, facecolor=BOX_FACE, zorder=2,
+        linewidth=2.2 if active else 1.4,
+        edgecolor=PIPE_EDGE if active else BOX_EDGE,
+        facecolor=PIPE_FACE if active else BOX_FACE, zorder=2,
     ))
     if label:
         ax.text(cx, cy, label, ha="center", va="center", fontsize=9.5,
@@ -368,6 +374,35 @@ def draw_row(ax, x0, cy, count, kb, labels, input_state, output_state, gap=0.22)
         slots.append(draw_slot(ax, cx, cy, kb, labels[i] if labels else None,
                                input_state, output_state))
     return slots
+
+
+def draw_pipe_between(ax, src_port, dst_port, label, label_dx=0.30):
+    """A pipe joining two ports that are not vertically aligned.
+
+    Drawn as a slanted conduit rather than a dog-leg: the ports of adjacent rows
+    rarely line up once boxes are sized by capacity.
+    """
+    import math
+    x0, y0 = src_port
+    x1, y1 = dst_port
+    dx, dy = x1 - x0, y1 - y0
+    length = math.hypot(dx, dy)
+    ux, uy = dx / length, dy / length
+    px, py = -uy * PIPE_W / 2, ux * PIPE_W / 2
+    ax.add_patch(Polygon(
+        [(x0 + px, y0 + py), (x1 + px, y1 + py),
+         (x1 - px, y1 - py), (x0 - px, y0 - py)],
+        closed=True, linewidth=1.5, edgecolor=PIPE_EDGE,
+        facecolor=PIPE_FACE, zorder=1,
+    ))
+    ax.add_patch(FancyArrowPatch(
+        (x0 + ux * 0.26, y0 + uy * 0.26), (x1 - ux * 0.26, y1 - uy * 0.26),
+        arrowstyle="-|>", mutation_scale=15, linewidth=1.6,
+        color=PIPE_EDGE, shrinkA=0, shrinkB=0, zorder=3,
+    ))
+    ax.text((x0 + x1) / 2 + PIPE_W / 2 + label_dx, (y0 + y1) / 2, label,
+            ha="left", va="center", fontsize=11, fontweight="bold",
+            color=INK, zorder=4)
 
 
 def draw_source_pipe(ax, dst_port, label, length=1.15):
@@ -542,74 +577,115 @@ def signal_animation(path, dpi=110):
                    duration=durations, loop=0, disposal=2)
     return path
 
+# (row label, count, KB each, row centre y, per-box labels)
+BN256_ROWS = [
+    ("TMA", 6, 32, 5.90, [str(i) for i in range(6)]),
+    ("MMA", 2, 128, 4.00, ["0", "1"]),
+    ("tcgen05.ld", 1, 32, 2.50, [""]),
+    ("Store", 2, 16, 1.05, ["0", "1"]),
+]
+BN256_SIZES = [
+    (5.90, "6 x 32 KB", "SMEM  ·  192 KB"),
+    (4.00, "2 x 128 KB", "TMEM  ·  256 KB"),
+    (2.50, "1 x 32 KB", "RMEM"),
+    (1.05, "2 x 16 KB", "SMEM  ·  32 KB"),
+]
+
+
+def _bn256_layout(ax, states=None, active=(), x0=2.30):
+    """Draw every buffer of the BN=256 pipeline, sized by capacity.
+
+    `states` maps (row, index) to (input, output); anything absent is an empty
+    buffer, i.e. free to overwrite with nothing to hand on. `active` marks the
+    buffers an operation is touching.
+    """
+    states = states or {}
+    placed = {}
+    for ri, (name, count, kb, cy, labels) in enumerate(BN256_ROWS):
+        w = KB32_W * kb / 32.0
+        for i in range(count):
+            cx = x0 + w / 2 + i * (w + 0.22)
+            ins, outs = states.get((ri, i), (READY, NOT_READY))
+            placed[(ri, i)] = draw_slot(ax, cx, cy, kb, labels[i], ins, outs,
+                                        active=(ri, i) in active)
+        ax.text(x0 - 0.30, cy, name, ha="right", va="center",
+                fontsize=11, fontweight="bold", color=INK)
+    return placed
+
+
+def _bn256_chrome(ax, state, subtitle, note):
+    """Title, size legend and footnote shared by every BN=256 state figure."""
+    ax.text(0.30, 8.30, f"BN=256 double-buffered pipeline — state {state}",
+            ha="left", va="center", fontsize=15, fontweight="bold", color=INK)
+    ax.text(0.30, 7.91, subtitle, ha="left", va="center",
+            fontsize=10.5, color=MUTED)
+    lx = 12.05
+    ax.text(lx, 6.75, "Buffer sizes", ha="left", va="center",
+            fontsize=10.5, fontweight="bold", color=INK)
+    for cy, size, where in BN256_SIZES:
+        ax.text(lx, cy + 0.15, size, ha="left", va="center",
+                fontsize=10, fontweight="bold", color=INK)
+        ax.text(lx, cy - 0.16, where, ha="left", va="center",
+                fontsize=8.5, color=MUTED)
+    ax.text(0.30, 0.28, note, ha="left", va="center", fontsize=9, color=INK)
+    ax.set_xlim(0.0, 14.9)
+    ax.set_ylim(0.05, 8.50)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
 
 def bn256_state1_tma_load():
     """BN=256 double-buffered pipeline, state 1: only the TMA load is running.
-
-    Every buffer of the kernel, drawn to scale - box area is proportional to the
-    memory each one occupies. Six 32 KB TMA slots, two 128 KB TMEM accumulators,
-    one 32 KB register buffer for the tcgen05.ld results, two 16 KB store
-    buffers.
 
     Nothing has produced anything yet, so every output port is red and no
     operation between buffers can fire. The one thing that can run is the load
     from memory, drawn as a pipe with no source buffer: global memory is not a
     buffer in this model.
     """
-    fig, ax = plt.subplots(figsize=(13.0, 7.1))
-
-    x0 = 2.30
-    rows = [
-        (5.55, 6, 32, [str(i) for i in range(6)], "TMA"),
-        (4.10, 2, 128, ["0", "1"], "MMA"),
-        (2.65, 1, 32, [""], "tcgen05.ld"),
-        (1.20, 2, 16, ["0", "1"], "Store"),
-    ]
-    placed = []
-    for cy, count, kb, labels, name in rows:
-        placed.append(draw_row(ax, x0, cy, count, kb, labels, READY, NOT_READY))
-        ax.text(x0 - 0.30, cy, name, ha="right", va="center",
-                fontsize=11, fontweight="bold", color=INK)
-
-    draw_source_pipe(ax, placed[0][0]["in"], "TMA load")
-
-    ax.text(0.30, 7.95, "BN=256 double-buffered pipeline — state 1",
-            ha="left", va="center", fontsize=15, fontweight="bold", color=INK)
-    ax.text(0.30, 7.56,
-            "only the TMA load is running; every buffer is still empty",
-            ha="left", va="center", fontsize=10.5, color=MUTED)
-
-    lx = 12.05
-    ax.text(lx, 6.35, "Buffer sizes", ha="left", va="center",
-            fontsize=10.5, fontweight="bold", color=INK)
-    sizes = [
-        (5.55, "6 x 32 KB", "SMEM  ·  192 KB"),
-        (4.10, "2 x 128 KB", "TMEM  ·  256 KB"),
-        (2.65, "1 x 32 KB", "RMEM"),
-        (1.20, "2 x 16 KB", "SMEM  ·  32 KB"),
-    ]
-    for cy, size, where in sizes:
-        ax.text(lx, cy + 0.15, size, ha="left", va="center",
-                fontsize=10, fontweight="bold", color=INK)
-        ax.text(lx, cy - 0.16, where, ha="left", va="center",
-                fontsize=8.5, color=MUTED)
-
-    ax.text(0.30, 0.28,
-            "Box area is proportional to capacity, so the two accumulators "
-            "outweigh all six input slots put together.",
-            ha="left", va="center", fontsize=9, color=INK)
-
-    ax.set_xlim(0.0, 14.9)
-    ax.set_ylim(0.05, 8.15)
-    ax.set_aspect("equal")
-    ax.axis("off")
+    fig, ax = plt.subplots(figsize=(13.0, 7.4))
+    placed = _bn256_layout(ax, active={(0, 0)})
+    draw_source_pipe(ax, placed[(0, 0)]["in"], "TMA load")
+    _bn256_chrome(
+        ax, 1, "only the TMA load is running; every buffer is still empty",
+        "Box area is proportional to capacity, so the two accumulators "
+        "outweigh all six input slots put together.")
     fig.tight_layout()
     return fig
+
+
+def bn256_state2_tma_and_mma():
+    """State 2: the TMA load and the first MMA run at once.
+
+    Slot 0 is full, so its output port is green and the MMA can read it; the TMA
+    load has moved on to slot 1. That overlap is the whole point of the multi-
+    stage ring - the load for the next k-tile runs while the MMA consumes the
+    last one.
+
+    The MMA buffer's ports do not change while it accumulates: its input stays
+    green because the MMA keeps writing to it, and its output stays red until
+    the last k-tile of the tile is in.
+    """
+    fig, ax = plt.subplots(figsize=(13.0, 7.4))
+    states = {
+        (0, 0): (NOT_READY, READY),   # slot 0 full, being consumed by the MMA
+    }
+    placed = _bn256_layout(ax, states, active={(0, 0), (0, 1), (1, 0)})
+    draw_source_pipe(ax, placed[(0, 1)]["in"], "TMA load")
+    draw_pipe_between(ax, placed[(0, 0)]["out"], placed[(1, 0)]["in"], "MMA",
+                      label_dx=0.34)
+    _bn256_chrome(
+        ax, 2, "the TMA load and the first MMA run at the same time",
+        "Slot 0 is full so the MMA can read it, while the load has moved on to "
+        "slot 1 — the overlap the multi-stage ring exists for.")
+    fig.tight_layout()
+    return fig
+
 
 
 FIGURES = {
     "buffer-kinds": buffer_kinds,
     "bn256-state1-tma-load": bn256_state1_tma_load,
+    "bn256-state2-tma-and-mma": bn256_state2_tma_and_mma,
     "operation-as-pipe": operation_as_pipe,
     "signal-flips-a-port": signal_flips_a_port,
     "per-slot-initial-state": per_slot_initial_state,
