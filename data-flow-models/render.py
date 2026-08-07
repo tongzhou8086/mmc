@@ -743,9 +743,7 @@ def bn256_state4_data_ready_and_ld():
                       label_dx=0.34)
     _bn256_chrome(
         ax, 4, "three operations at once — load, MMA, and the accumulator drain",
-        "MMA buffer 0 took a data-ready signal, so its output opened and its "
-        "input closed, and tcgen05.ld drains it. The next output tile's MMA is "
-        "already running on MMA buffer 1 — the reason there are two.")
+        "One accumulator drains while the other fills — the reason there are two.")
     fig.tight_layout()
     return fig
 
