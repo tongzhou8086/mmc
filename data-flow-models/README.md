@@ -90,6 +90,19 @@ k-tile of the output tile is in.
 
 ![BN=256 pipeline, state 2](figures/bn256-state2-tma-and-mma.png)
 
+### `bn256-state3-ring-advances`
+
+State 3: the ring has advanced one slot. Slot 0 was consumed, so a buffer-free
+signal returned it to empty and it is available to the load again; the load is
+on slot 2 and the MMA on slot 1. The accumulator is on its second k-tile and
+still has nothing to hand on, so its output stays red.
+
+This is the steady state of the k loop — one slot being filled, one being
+consumed, and the rest of the ring absorbing the difference in rate between
+them.
+
+![BN=256 pipeline, state 3](figures/bn256-state3-ring-advances.png)
+
 ### `buffer-kinds`
 
 The four kinds of buffer in a 2x2 grid, with no operations between them. They

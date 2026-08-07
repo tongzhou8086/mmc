@@ -682,10 +682,38 @@ def bn256_state2_tma_and_mma():
 
 
 
+def bn256_state3_ring_advances():
+    """State 3: the ring has advanced one slot.
+
+    Slot 0 has been consumed, so a buffer-free signal returned it to empty -
+    input green, output red - and the load has moved on to slot 2 while the MMA
+    reads slot 1. The accumulator is on its second k-tile and still has nothing
+    to hand on, so its output stays red.
+
+    This is the steady state of the k loop: one slot being filled, one being
+    consumed, and the rest of the ring absorbing the difference in rate.
+    """
+    fig, ax = plt.subplots(figsize=(13.0, 7.4))
+    states = {
+        (0, 1): (NOT_READY, READY),   # slot 1 full, being consumed
+    }
+    placed = _bn256_layout(ax, states, active={(0, 1), (0, 2), (1, 0)})
+    draw_source_pipe(ax, placed[(0, 2)]["in"], "TMA load")
+    draw_pipe_between(ax, placed[(0, 1)]["out"], placed[(1, 0)]["in"], "MMA",
+                      label_dx=0.34)
+    _bn256_chrome(
+        ax, 3, "the ring advances: the load is on slot 2, the MMA on slot 1",
+        "Slot 0 was consumed and a buffer-free signal returned it to empty, so "
+        "it is available to the load again.")
+    fig.tight_layout()
+    return fig
+
+
 FIGURES = {
     "buffer-kinds": buffer_kinds,
     "bn256-state1-tma-load": bn256_state1_tma_load,
     "bn256-state2-tma-and-mma": bn256_state2_tma_and_mma,
+    "bn256-state3-ring-advances": bn256_state3_ring_advances,
     "operation-as-pipe": operation_as_pipe,
     "signal-flips-a-port": signal_flips_a_port,
     "per-slot-initial-state": per_slot_initial_state,
