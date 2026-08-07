@@ -129,6 +129,34 @@ notion of 64-column pieces.
 
 ![BN=256 pipeline, state 4](figures/bn256-state4-data-ready-and-ld.png)
 
+### `bn256-state5-epilogue-to-store`
+
+State 5: `tcgen05.ld` finished, so the register buffer is full — input red,
+output green — and the epilogue moves it into store buffer 0. Section 0 of the
+accumulator is drained, so that section's output port is red while sections 1
+to 3 are still green and waiting. The pipe from TMEM is gone: that operation is
+over.
+
+There is only one register buffer, so section 1 cannot leave TMEM until this
+pack has emptied it. **The `tcgen05.ld` and the SMEM staging are serialized**,
+and that serialization is part of the design rather than an accident of the
+drawing.
+
+![BN=256 pipeline, state 5](figures/bn256-state5-epilogue-to-store.png)
+
+### `bn256-state6-store-to-memory`
+
+State 6: store buffer 0 is full, so the TMA store carries it to memory — a pipe
+with no *destination*, the mirror of the load's pipe with no source. The
+register buffer was emptied by the pack, so `tcgen05.ld` runs again, this time
+on section 1.
+
+Accumulator 1 has taken both its k-tiles and its data-ready has fired, so it is
+full and waiting. With accumulator 0 still draining, there is nowhere for the
+next output tile's MMA to accumulate: the pipeline is briefly epilogue-bound.
+
+![BN=256 pipeline, state 6](figures/bn256-state6-store-to-memory.png)
+
 ### `buffer-kinds`
 
 The four kinds of buffer in a 2x2 grid, with no operations between them. They

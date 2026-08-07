@@ -365,6 +365,11 @@ def draw_slot(ax, cx, cy, kb, label, input_state, output_state, active=False,
     # its own output port; the input stays single, since it is filled as a whole.
     top = (cx, cy + SLOT_H / 2)
     draw_port(ax, *top, input_state, radius=0.105)
+    # output_state may be one colour, or one per section for a buffer that is
+    # partway through draining.
+    per_sec = (list(output_state) if isinstance(output_state, (list, tuple))
+               else [output_state] * sections)
+    assert len(per_sec) == sections
     sec_w = w / sections
     outs = []
     for i in range(sections):
@@ -375,7 +380,7 @@ def draw_slot(ax, cx, cy, kb, label, input_state, output_state, active=False,
                     color=PIPE_EDGE if active else BOX_EDGE,
                     linewidth=1.0, linestyle=(0, (3, 2)), zorder=3)
         outs.append((sx, cy - SLOT_H / 2))
-        draw_port(ax, sx, cy - SLOT_H / 2, output_state, radius=0.105)
+        draw_port(ax, sx, cy - SLOT_H / 2, per_sec[i], radius=0.105)
     return {"in": top, "out": outs[0] if sections == 1 else (cx, cy - SLOT_H / 2),
             "outs": outs, "w": w}
 
@@ -391,7 +396,29 @@ def draw_row(ax, x0, cy, count, kb, labels, input_state, output_state, gap=0.22)
     return slots
 
 
-def draw_pipe_between(ax, src_port, dst_port, label, label_dx=0.30):
+def draw_sink_pipe(ax, src_port, label, length=0.62, width=PIPE_W):
+    """A pipe with no destination buffer - data leaving for memory.
+
+    The mirror of draw_source_pipe: global memory is not a buffer in this model,
+    so a store to it is drawn as a pipe that simply ends.
+    """
+    x, y = src_port
+    bottom = y - length
+    ax.add_patch(FancyBboxPatch(
+        (x - width / 2, bottom), width, length,
+        boxstyle="round,pad=0,rounding_size=0.06",
+        linewidth=1.5, edgecolor=PIPE_EDGE, facecolor=PIPE_FACE, zorder=1,
+    ))
+    ax.add_patch(FancyArrowPatch(
+        (x, y - 0.15), (x, bottom + 0.13), arrowstyle="-|>", mutation_scale=14,
+        linewidth=1.6, color=PIPE_EDGE, shrinkA=0, shrinkB=0, zorder=3,
+    ))
+    ax.text(x + width / 2 + 0.18, bottom + 0.16, label, ha="left", va="center",
+            fontsize=11, fontweight="bold", color=INK, zorder=4)
+
+
+def draw_pipe_between(ax, src_port, dst_port, label, label_dx=0.30,
+                      width=PIPE_W):
     """A pipe joining two ports that are not vertically aligned.
 
     Drawn as a slanted conduit rather than a dog-leg: the ports of adjacent rows
@@ -403,7 +430,7 @@ def draw_pipe_between(ax, src_port, dst_port, label, label_dx=0.30):
     dx, dy = x1 - x0, y1 - y0
     length = math.hypot(dx, dy)
     ux, uy = dx / length, dy / length
-    px, py = -uy * PIPE_W / 2, ux * PIPE_W / 2
+    px, py = -uy * width / 2, ux * width / 2
     ax.add_patch(Polygon(
         [(x0 + px, y0 + py), (x1 + px, y1 + py),
          (x1 - px, y1 - py), (x0 - px, y0 - py)],
@@ -415,7 +442,7 @@ def draw_pipe_between(ax, src_port, dst_port, label, label_dx=0.30):
         arrowstyle="-|>", mutation_scale=15, linewidth=1.6,
         color=PIPE_EDGE, shrinkA=0, shrinkB=0, zorder=3,
     ))
-    ax.text((x0 + x1) / 2 + PIPE_W / 2 + label_dx, (y0 + y1) / 2, label,
+    ax.text((x0 + x1) / 2 + width / 2 + label_dx, (y0 + y1) / 2, label,
             ha="left", va="center", fontsize=11, fontweight="bold",
             color=INK, zorder=4)
 
@@ -648,9 +675,9 @@ def _bn256_chrome(ax, state, subtitle, note):
                 fontsize=10, fontweight="bold", color=INK)
         ax.text(lx, cy - 0.16, where, ha="left", va="center",
                 fontsize=8.5, color=MUTED)
-    ax.text(0.30, 0.28, note, ha="left", va="center", fontsize=9, color=INK)
+    ax.text(0.30, -0.36, note, ha="left", va="center", fontsize=9, color=INK)
     ax.set_xlim(0.0, 14.9)
-    ax.set_ylim(0.05, 8.50)
+    ax.set_ylim(-0.68, 8.50)
     ax.set_aspect("equal")
     ax.axis("off")
 
@@ -780,12 +807,82 @@ def bn256_state4_data_ready_and_ld():
     return fig
 
 
+def bn256_state5_epilogue_to_store():
+    """State 5: the drained section is packed into a store buffer.
+
+    tcgen05.ld finished, so the register buffer is full - input red, output
+    green - and the epilogue moves it into store buffer 0. Section 0 of the
+    accumulator has been drained, so that section's output port is red while
+    sections 1 to 3 are still green and waiting.
+
+    There is only one register buffer, so section 1 cannot be pulled out of TMEM
+    until this pack has emptied it. That serialization is the cost of the single
+    32 KB buffer, and it is what the epilogue's staging depth exists to hide.
+    """
+    fig, ax = plt.subplots(figsize=(13.0, 7.4))
+    states = {
+        (0, 3): (NOT_READY, READY),                       # slot 3 feeding the MMA
+        (1, 0): (NOT_READY, [NOT_READY] + [READY] * 3),   # section 0 drained
+        (2, 0): (NOT_READY, READY),                       # registers hold section 0
+    }
+    placed = _bn256_layout(ax, states,
+                           active={(0, 3), (0, 4), (1, 1), (2, 0), (3, 0)},
+                           sections={(1, 0): 4})
+    draw_source_pipe(ax, placed[(0, 4)]["in"], "TMA load")
+    draw_pipe_between(ax, placed[(0, 3)]["out"], placed[(1, 1)]["in"], "MMA",
+                      label_dx=0.34)
+    draw_pipe_between(ax, placed[(2, 0)]["out"], placed[(3, 0)]["in"],
+                      "epilogue", label_dx=0.30, width=0.42)
+    _bn256_chrome(
+        ax, 5, "the drained section is packed into a store buffer",
+        "Section 0 is out of TMEM and in registers; the other three sections "
+        "wait for the single register buffer to free up.")
+    fig.tight_layout()
+    return fig
+
+
+def bn256_state6_store_to_memory():
+    """State 6: the staged tile goes to memory while section 1 is pulled out.
+
+    Store buffer 0 is full, so the TMA store carries it to memory - a pipe with
+    no destination, since memory is not a buffer here. The register buffer was
+    emptied by that pack, so tcgen05.ld can run again, this time on section 1.
+
+    Accumulator 1 has taken both of its k-tiles and its data-ready has fired, so
+    it is full and waiting: with accumulator 0 still draining, there is nowhere
+    for the next output tile's MMA to accumulate. The pipeline is briefly
+    epilogue-bound.
+    """
+    fig, ax = plt.subplots(figsize=(13.0, 7.4))
+    states = {
+        (0, 4): (NOT_READY, READY),                       # slot 4 full, waiting
+        (1, 0): (NOT_READY, [NOT_READY] + [READY] * 3),   # section 0 already out
+        (1, 1): (NOT_READY, READY),                       # accumulator 1 complete
+        (3, 0): (NOT_READY, READY),                       # staged tile ready to store
+    }
+    placed = _bn256_layout(ax, states,
+                           active={(0, 5), (1, 0), (2, 0), (3, 0)},
+                           sections={(1, 0): 4})
+    draw_source_pipe(ax, placed[(0, 5)]["in"], "TMA load")
+    draw_pipe_between(ax, placed[(1, 0)]["outs"][1], placed[(2, 0)]["in"],
+                      "tcgen05.ld", label_dx=0.34)
+    draw_sink_pipe(ax, placed[(3, 0)]["out"], "TMA store", width=0.42)
+    _bn256_chrome(
+        ax, 6, "the staged tile goes to memory while section 1 leaves TMEM",
+        "Accumulator 1 is full and accumulator 0 is still draining, so the next "
+        "tile's MMA has nowhere to go — the pipeline is epilogue-bound.")
+    fig.tight_layout()
+    return fig
+
+
 FIGURES = {
     "buffer-kinds": buffer_kinds,
     "bn256-state1-tma-load": bn256_state1_tma_load,
     "bn256-state2-tma-and-mma": bn256_state2_tma_and_mma,
     "bn256-state3-ring-advances": bn256_state3_ring_advances,
     "bn256-state4-data-ready-and-ld": bn256_state4_data_ready_and_ld,
+    "bn256-state5-epilogue-to-store": bn256_state5_epilogue_to_store,
+    "bn256-state6-store-to-memory": bn256_state6_store_to_memory,
     "operation-as-pipe": operation_as_pipe,
     "signal-flips-a-port": signal_flips_a_port,
     "per-slot-initial-state": per_slot_initial_state,
