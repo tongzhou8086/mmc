@@ -743,7 +743,8 @@ def bn256_state4_data_ready_and_ld():
                       label_dx=0.34)
     _bn256_chrome(
         ax, 4, "three operations at once — load, MMA, and the accumulator drain",
-        "One accumulator drains while the other fills — the reason there are two.")
+        "The current output tile's accumulator is draining while the next "
+        "tile's MMA accumulates into the other MMA buffer.")
     fig.tight_layout()
     return fig
 
