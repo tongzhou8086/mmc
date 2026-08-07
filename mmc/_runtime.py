@@ -292,12 +292,16 @@ class Runtime:
     def _build_bf16_launch_args(self, spec, a, b, out, stream):
         m, k = a.shape
         n = b.shape[1]
+        bf16_swizzle_elements = 128 // 2
         # The BF16 kernels take three rank-2 descriptors: A[M,K] tiled BM x BK,
         # B[K,N] tiled BK x one 128B swizzle group (64 BF16 columns), and C[M,N]
         # tiled BM x STORE_N for the chunked TMA-store epilogue.
-        bf16_swizzle_elements = 128 // 2
         descriptors = (
-            _bf16_map(a, m, k, BM, spec.bk),
+            # A's box is one 128B swizzle atom wide (64 BF16 elements), not the
+            # whole of BK: 128B swizzle caps the contiguous box extent at 128
+            # bytes. A BK>64 kernel therefore fetches A as BK/64 chunks. For
+            # BK=64 this is the same descriptor as before.
+            _bf16_map(a, m, k, BM, bf16_swizzle_elements),
             _bf16_map(b, k, n, spec.bk, bf16_swizzle_elements),
             _bf16_map(out, m, n, BM, STORE_N),
         )
