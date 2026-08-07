@@ -137,6 +137,10 @@ accumulator is drained, so that section's output port is red while sections 1
 to 3 are still green and waiting. The pipe from TMEM is gone: that operation is
 over.
 
+The MMA and the load have *not* moved on. TMEM → RMEM → SMEM is far quicker
+than a tensor-core MMA or an HBM load, so several epilogue steps pass inside a
+single k-tile.
+
 There is only one register buffer, so section 1 cannot leave TMEM until this
 pack has emptied it. **The `tcgen05.ld` and the SMEM staging are serialized**,
 and that serialization is part of the design rather than an accident of the
@@ -151,9 +155,9 @@ with no *destination*, the mirror of the load's pipe with no source. The
 register buffer was emptied by the pack, so `tcgen05.ld` runs again, this time
 on section 1.
 
-Accumulator 1 has taken both its k-tiles and its data-ready has fired, so it is
-full and waiting. With accumulator 0 still draining, there is nowhere for the
-next output tile's MMA to accumulate: the pipeline is briefly epilogue-bound.
+The MMA is still on the k-tile it started in state 4, and the load on the same
+slot: three epilogue steps have gone by in the time those take one. That rate
+difference is what the ring and the second accumulator exist to absorb.
 
 ![BN=256 pipeline, state 6](figures/bn256-state6-store-to-memory.png)
 

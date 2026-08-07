@@ -813,30 +813,34 @@ def bn256_state5_epilogue_to_store():
     tcgen05.ld finished, so the register buffer is full - input red, output
     green - and the epilogue moves it into store buffer 0. Section 0 of the
     accumulator has been drained, so that section's output port is red while
-    sections 1 to 3 are still green and waiting.
+    sections 1 to 3 are still green and waiting. The pipe out of TMEM is gone:
+    that operation is over.
+
+    The MMA and the load have not moved on. TMEM to RMEM to SMEM is far quicker
+    than a tensor-core MMA or an HBM load, so several epilogue steps pass inside
+    one k-tile.
 
     There is only one register buffer, so section 1 cannot be pulled out of TMEM
-    until this pack has emptied it. That serialization is the cost of the single
-    32 KB buffer, and it is what the epilogue's staging depth exists to hide.
+    until this pack has emptied it. That serialization is part of the design.
     """
     fig, ax = plt.subplots(figsize=(13.0, 7.4))
     states = {
-        (0, 3): (NOT_READY, READY),                       # slot 3 feeding the MMA
+        (0, 2): (NOT_READY, READY),                       # slot 2 still feeding the MMA
         (1, 0): (NOT_READY, [NOT_READY] + [READY] * 3),   # section 0 drained
         (2, 0): (NOT_READY, READY),                       # registers hold section 0
     }
     placed = _bn256_layout(ax, states,
-                           active={(0, 3), (0, 4), (1, 1), (2, 0), (3, 0)},
+                           active={(0, 2), (0, 3), (1, 1), (2, 0), (3, 0)},
                            sections={(1, 0): 4})
-    draw_source_pipe(ax, placed[(0, 4)]["in"], "TMA load")
-    draw_pipe_between(ax, placed[(0, 3)]["out"], placed[(1, 1)]["in"], "MMA",
+    draw_source_pipe(ax, placed[(0, 3)]["in"], "TMA load")
+    draw_pipe_between(ax, placed[(0, 2)]["out"], placed[(1, 1)]["in"], "MMA",
                       label_dx=0.34)
     draw_pipe_between(ax, placed[(2, 0)]["out"], placed[(3, 0)]["in"],
                       "epilogue", label_dx=0.30, width=0.42)
     _bn256_chrome(
         ax, 5, "the drained section is packed into a store buffer",
-        "Section 0 is out of TMEM and in registers; the other three sections "
-        "wait for the single register buffer to free up.")
+        "The MMA and the load have not moved on: TMEM to RMEM to SMEM is far "
+        "quicker than a tensor-core MMA or an HBM load.")
     fig.tight_layout()
     return fig
 
@@ -845,32 +849,33 @@ def bn256_state6_store_to_memory():
     """State 6: the staged tile goes to memory while section 1 is pulled out.
 
     Store buffer 0 is full, so the TMA store carries it to memory - a pipe with
-    no destination, since memory is not a buffer here. The register buffer was
-    emptied by that pack, so tcgen05.ld can run again, this time on section 1.
+    no destination, the mirror of the load's pipe with no source. The pack
+    emptied the register buffer, so tcgen05.ld can run again, on section 1.
 
-    Accumulator 1 has taken both of its k-tiles and its data-ready has fired, so
-    it is full and waiting: with accumulator 0 still draining, there is nowhere
-    for the next output tile's MMA to accumulate. The pipeline is briefly
-    epilogue-bound.
+    The MMA is still on the same k-tile it started in state 4, and the load on
+    the same slot: three epilogue steps have gone by in the time those take one.
+    That is the rate difference the ring and the double accumulator exist to
+    absorb.
     """
     fig, ax = plt.subplots(figsize=(13.0, 7.4))
     states = {
-        (0, 4): (NOT_READY, READY),                       # slot 4 full, waiting
+        (0, 2): (NOT_READY, READY),                       # slot 2 still feeding the MMA
         (1, 0): (NOT_READY, [NOT_READY] + [READY] * 3),   # section 0 already out
-        (1, 1): (NOT_READY, READY),                       # accumulator 1 complete
-        (3, 0): (NOT_READY, READY),                       # staged tile ready to store
+        (3, 0): (NOT_READY, READY),                       # staged tile on its way out
     }
     placed = _bn256_layout(ax, states,
-                           active={(0, 5), (1, 0), (2, 0), (3, 0)},
+                           active={(0, 2), (0, 3), (1, 0), (1, 1), (2, 0), (3, 0)},
                            sections={(1, 0): 4})
-    draw_source_pipe(ax, placed[(0, 5)]["in"], "TMA load")
+    draw_source_pipe(ax, placed[(0, 3)]["in"], "TMA load")
+    draw_pipe_between(ax, placed[(0, 2)]["out"], placed[(1, 1)]["in"], "MMA",
+                      label_dx=0.34)
     draw_pipe_between(ax, placed[(1, 0)]["outs"][1], placed[(2, 0)]["in"],
                       "tcgen05.ld", label_dx=0.34)
     draw_sink_pipe(ax, placed[(3, 0)]["out"], "TMA store", width=0.42)
     _bn256_chrome(
         ax, 6, "the staged tile goes to memory while section 1 leaves TMEM",
-        "Accumulator 1 is full and accumulator 0 is still draining, so the next "
-        "tile's MMA has nowhere to go — the pipeline is epilogue-bound.")
+        "Three epilogue steps have passed inside one MMA and one load — the "
+        "rate difference the ring and the second accumulator absorb.")
     fig.tight_layout()
     return fig
 
