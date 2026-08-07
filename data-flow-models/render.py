@@ -615,9 +615,10 @@ def _bn256_layout(ax, states=None, active=(), x0=2.30):
 
 def _bn256_chrome(ax, state, subtitle, note):
     """Title, size legend and footnote shared by every BN=256 state figure."""
-    ax.text(0.30, 8.30, f"BN=256 double-buffered pipeline — state {state}",
+    ax.text(0.30, 8.30,
+            "BM=128 · BN=256 · BK=64 pipeline — K=128 for illustration",
             ha="left", va="center", fontsize=15, fontweight="bold", color=INK)
-    ax.text(0.30, 7.91, subtitle, ha="left", va="center",
+    ax.text(0.30, 7.91, f"state {state} — {subtitle}", ha="left", va="center",
             fontsize=10.5, color=MUTED)
     lx = 12.05
     ax.text(lx, 6.75, "Buffer sizes", ha="left", va="center",
@@ -635,7 +636,10 @@ def _bn256_chrome(ax, state, subtitle, note):
 
 
 def bn256_state1_tma_load():
-    """BN=256 double-buffered pipeline, state 1: only the TMA load is running.
+    """State 1 of the BM=128 / BN=256 / BK=64 pipeline: only the TMA load runs.
+
+    K is 128 throughout this sequence, so an output tile takes exactly two
+    k-tiles - few enough to show a whole one.
 
     Nothing has produced anything yet, so every output port is red and no
     operation between buffers can fire. The one thing that can run is the load
@@ -656,6 +660,8 @@ def bn256_state1_tma_load():
 def bn256_state2_tma_and_mma():
     """State 2: the TMA load and the first MMA run at once.
 
+    With K=128 this MMA is k-tile 0 of 2 for the first output tile.
+
     Slot 0 is full, so its output port is green and the MMA can read it; the TMA
     load has moved on to slot 1. That overlap is the whole point of the multi-
     stage ring - the load for the next k-tile runs while the MMA consumes the
@@ -675,8 +681,8 @@ def bn256_state2_tma_and_mma():
                       label_dx=0.34)
     _bn256_chrome(
         ax, 2, "the TMA load and the first MMA run at the same time",
-        "Slot 0 is full so the MMA can read it, while the load has moved on to "
-        "slot 1 — the overlap the multi-stage ring exists for.")
+        "Slot 0 is full so the MMA can read it — this is k-tile 0 of 2 — while "
+        "the load has moved on to slot 1, the overlap the ring exists for.")
     fig.tight_layout()
     return fig
 
@@ -687,11 +693,12 @@ def bn256_state3_ring_advances():
 
     Slot 0 has been consumed, so a buffer-free signal returned it to empty -
     input green, output red - and the load has moved on to slot 2 while the MMA
-    reads slot 1. The accumulator is on its second k-tile and still has nothing
-    to hand on, so its output stays red.
+    reads slot 1.
 
-    This is the steady state of the k loop: one slot being filled, one being
-    consumed, and the rest of the ring absorbing the difference in rate.
+    With K=128 slot 1 is the *last* k-tile of this output tile, so the
+    accumulator is about to be complete; its output is still red only because
+    this MMA has not finished yet. Slot 2 is therefore already the next output
+    tile's first k-tile - the ring runs ahead across the tile boundary.
     """
     fig, ax = plt.subplots(figsize=(13.0, 7.4))
     states = {
@@ -703,8 +710,8 @@ def bn256_state3_ring_advances():
                       label_dx=0.34)
     _bn256_chrome(
         ax, 3, "the ring advances: the load is on slot 2, the MMA on slot 1",
-        "Slot 0 was consumed and a buffer-free signal returned it to empty, so "
-        "it is available to the load again.")
+        "Slot 1 is the last of this tile's two k-tiles, so slot 2 already holds "
+        "the next output tile's first — the ring runs ahead across the boundary.")
     fig.tight_layout()
     return fig
 

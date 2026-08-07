@@ -64,13 +64,16 @@ flips when.
 
 ### `bn256-state1-tma-load`
 
-The whole BN=256 double-buffered pipeline, drawn to scale: six 32 KB TMA slots,
+The whole BM=128 / BN=256 / BK=64 pipeline, drawn to scale: six 32 KB TMA slots,
 two 128 KB TMEM accumulators, one 32 KB register buffer for the `tcgen05.ld`
 results, two 16 KB store buffers. Box area is proportional to capacity, which is
 the point of drawing them together — the two accumulators outweigh all six input
 slots put together.
 
-State 1 of a sequence: only the TMA load is running. Nothing has produced
+K is 128 throughout this sequence, so an output tile takes exactly two k-tiles —
+few enough that the states can walk through a whole one.
+
+State 1: only the TMA load is running. Nothing has produced
 anything yet, so every output port is red and no operation *between* buffers can
 fire. The one thing that can run is the load from memory, drawn as a pipe with
 no source buffer — global memory is not a buffer in this model.
@@ -80,8 +83,8 @@ no source buffer — global memory is not a buffer in this model.
 ### `bn256-state2-tma-and-mma`
 
 State 2: the TMA load and the first MMA run at the same time. Slot 0 is full, so
-its output port is green and the MMA can read it, while the load has moved on to
-slot 1 — the overlap the multi-stage ring exists for. Buffers an operation is
+its output port is green and the MMA can read it — this is k-tile 0 of 2 — while
+the load has moved on to slot 1, the overlap the multi-stage ring exists for. Buffers an operation is
 touching are tinted in the pipe colour.
 
 The MMA buffer's ports do not change while it accumulates: its input stays green
@@ -94,12 +97,12 @@ k-tile of the output tile is in.
 
 State 3: the ring has advanced one slot. Slot 0 was consumed, so a buffer-free
 signal returned it to empty and it is available to the load again; the load is
-on slot 2 and the MMA on slot 1. The accumulator is on its second k-tile and
-still has nothing to hand on, so its output stays red.
+on slot 2 and the MMA on slot 1.
 
-This is the steady state of the k loop — one slot being filled, one being
-consumed, and the rest of the ring absorbing the difference in rate between
-them.
+With K=128, slot 1 holds the *last* of this output tile's two k-tiles, so the
+accumulator is about to be complete — its output is still red only because this
+MMA has not finished. Slot 2 therefore already holds the *next* output tile's
+first k-tile: the ring runs ahead across the tile boundary.
 
 ![BN=256 pipeline, state 3](figures/bn256-state3-ring-advances.png)
 
