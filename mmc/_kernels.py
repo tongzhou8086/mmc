@@ -133,6 +133,12 @@ BF16_KERNELS = (
         "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-lead3-splitdr",
         64, 384, 230400, m_multiple=256, n_multiple=512,
     ),
+    # BK=128 with a 3-deep ring: same 192 KB of staging as the BK=64 kernel's
+    # 6 slots, but half as many k iterations and half the run-ahead depth.
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128", 128, 256, 230400,
+        m_multiple=256, n_multiple=256,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 
@@ -142,5 +148,5 @@ BF16_KERNEL_BY_NAME = {kernel.name: kernel for kernel in BF16_KERNELS}
 # set's version invalidates only that set's cached winners, and the two sets'
 # winners for the same shape cannot collide. Keep these distinct.
 MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
-BF16_KERNEL_SET_VERSION = "sm100a-bf16-v8"
+BF16_KERNEL_SET_VERSION = "sm100a-bf16-v10"
 assert MXFP8_KERNEL_SET_VERSION != BF16_KERNEL_SET_VERSION
