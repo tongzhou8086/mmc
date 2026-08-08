@@ -153,6 +153,13 @@ BF16_KERNELS = (
         "bf16-single-ns2-store2-bk128-bn512-load256-w8", 128, 384, 230400,
         m_multiple=256, n_multiple=512,
     ),
+    # BK=128 with a 2-deep ring, on the split-accumulator-barrier kernel: each
+    # MMA the freed panel starts on covers twice the K, so there is twice as
+    # much accumulation to overlap with the other panel's drain.
+    KernelSpec(
+        "bf16-single-ns2-store2-bk128-bn512-load256-w8-splitacc",
+        128, 384, 230400, m_multiple=256, n_multiple=512,
+    ),
     KernelSpec("torch.matmul", 1, backend="torch"),
 )
 
