@@ -116,6 +116,72 @@ Buffer 和 Buffer 之间的数据流动通过“操作”完成，我们定义�
 B tile 之所以后面会除以 2，就是因为 2 CTA MMA 的开启。下面我们看本文的第一种流水线设计。对于每种设计，我们首先看参数如何配，参数确定好以后，再看同步如何进行。
 
 
+## 流水线设计的原语（Primitives）
+除了参数配置，流水线设计也包括一系列的基本操作（Primitive operations），以函数 API 接口的方式总结如下：
+
+```c
+struct TMA_Buffer {
+  int_t size;  // its size
+  bool state;  // 0: input open  1: output open
+  TMA_Buffer(int_t size) {  state = 0; size = size; // initialize to input open }
+}
+
+struct MMA_Buffer {
+  int_t size;  // its size
+  bool state;  // 0: input open  1: output open
+  MMA_Buffer(int_t size) {  state = 0; size = size; // initialize to input open }
+}
+
+struct TCGEN05_LD_Buffer {
+  int_t size;  // its size
+  bool state;  // 0: input open  1: output open
+  TCGEN05_LD_Buffer(int_t size) { ... }
+}
+
+struct Store_Buffer {
+  ...
+}
+
+// TMA load operation
+* tma_load_async(input, cor_x, cor_y, SIZE_X, SIZE_Y, buffer, offset)
+  * 以 cor_x，cor_y 为坐标，从矩阵 matrix 加载 一个大小为（SIZE_X，SIZE_Y）的块进入 SMEM；Swizzling mode 会自动适配
+
+// MMA operation
+* issue_mma_chain_async(mma_buffer, ...)
+  * 为对应的 A tile 和 B tile issue MMA 指令
+  * 也是 non blocking 的，不需要等待 MMA 结束
+
+// tcgen05.ld operation
+tcgen05_ld_x32_async(mma_buffer, offset, ld_buffer, offset)
+tcgen05_wait_ld()
+
+// Stage operation
+stage(ld_buffer, store_buffer)
+
+// TMA write operation
+tma_store_async(store_buffer, output)
+
+// Signals
+* to_output_mode_on_tma_done(buffer)
+  * Non blocking call，类似于注册一个回调函数
+  * 当 TMA 操作完成时，打开 Buffer 的 Out 端口 
+* to_input_mode_on_tma_done(buffer)
+  
+* to_output_mode_on_mma_done(buffer)
+* to_input_mode_on_mma_done(buffer)
+
+wait_on_tma_buffer_in(tma_buffer)
+wait_on_tma_buffer_out(tma_buffer)
+wait_on_mma_buffer_in(mma_buffer)
+wait_on_mma_buffer_out(mma_buffer)
+wait_on_ld_buffer_in(ld_buffer)
+wait_on_ld_buffer_out(ld_buffer)
+wait_on_store_buffer_in(ld_buffer)
+
+*
+
+```
+  
 ## 第一种设计：BN256
 我们要讲的第一个设计：BM 为 128、BN 配成 256。如我们刚刚所说，Blackwell MMA engine 支持的 BN 尺寸有三种，64、128 和 256。所以我们默认就把 BN 配成最大的 256 —— BN 越大的话计算效率越高。与此同时，TMEM 的容量是 128 行乘 512 列，刚好可以装下两个 BN256 的 MMA buffer。这里之所以称这个版本为基础版，是因为它对于两个 MMA buffer 的同步模式的设计会比较简单，尽管简单，它已经是一个相当有效的设计，同时也是更加精巧设计的基础。
 
@@ -132,23 +198,31 @@ NUM_STORE = 2              # store buffer 个数
 STORE_N   = 64             # 每次 TMA store 的列数
 num_k     = K / BK         # 每个 output tile 需要的 k 迭代次数
 
+# -- Buffer 配置 --------------------------------------
+tma_buffers = TMA_Buffers[6]{..}
+... // 2 MMAbuffers
+... // 1 ld buffer
+... // 2 store buffer
+
 # ── TMA Warp ─────────────────────────────────────────
+gk = 0
 for tile in my_output_tiles:                 # 持久化 kernel：每个 CTA 处理若干 output tile
     for k in range(num_k):
-        s = (gk++) % NS                      # 在 NS 个 buffer 上轮转
-        wait(tma_buf[s].in)                  # buffer free：等输入端口打开
-        issue_tma_load(A[tile, k] -> tma_buf[s].A)
-        issue_tma_load(B[tile, k] -> tma_buf[s].B)
-        # 传输完成时硬件自动打开输出端口（data ready）
+        s = (gk++) % NS                        # 在 NS 个 buffer 上轮转
+        wait_on_buffer_free(tma_buffers[s])                  # buffer free：等输入端口打开
+        tma_load(A, ..., 128, 128, ... , tma_buffers[s], 0)
+        tma_load(B, ..., 128, 128, ... , tma_buffers[s], 16KB)
+        to_output_mode_on_tma_done(tma_buffers[s])
 
 # ── MMA Warp ─────────────────────────────────────────
+gk = 0
 for tile in my_output_tiles:
     acc = tile % NUM_ACC                     # 每换一个 output tile 就换一个 MMA buffer
     for k in range(num_k):
         s = (gk++) % NS
-        wait(tma_buf[s].out)                 # data ready：等数据就绪
+        wait_on_data_ready(tma_buffers[s])
         if k == 0:
-            wait(acc_buf[acc].in)            # 等 epilogue 把这个 MMA buffer 释放掉
+            wait_on_buffer_free(mma_buffers[acc])
         issue_mma(tma_buf[s] -> acc_buf[acc], accumulate = (k > 0))
         signal(tma_buf[s].in)                # MMA 消费完，TMA buffer 可以重新装填
     signal(acc_buf[acc].out)                 # num_k 次累加全部完成：data ready
@@ -158,13 +232,13 @@ for tile in my_output_tiles:
     acc = tile % NUM_ACC
     wait(acc_buf[acc].out)                   # 等这个 output tile 累加完
     for c in range(BN / STORE_N):            # 一次处理 64 列
-        tcgen05_ld(acc_buf[acc].section[c] -> reg_buf)     # TMEM -> RMEM
+        tcgen05_ld(mma_buffers[acc], c, ld_buffer)     # TMEM -> RMEM
         if c == BN / STORE_N - 1:
             signal(acc_buf[acc].in)          # 最后一段读进寄存器即可释放 MMA buffer
         b = (gs++) % NUM_STORE
-        wait(store_buf[b].in)                # 等上一次 TMA store 读完这块 SMEM
-        pack_and_write(reg_buf -> store_buf[b])            # RMEM -> SMEM
-        issue_tma_store(store_buf[b] -> C[tile, c])        # SMEM -> HBM
+        wait_on_store_buffer_in(store_buf[b])                # 等上一次 TMA store 读完这块 SMEM
+        stage(ld_buffer, store_buf[b])            # RMEM -> SMEM
+        tma_store_async(store_buf[b] -> C[tile, c])        # SMEM -> HBM
 ```
 
 这已经是一个高度重叠的流水线：MMA 操作在对 TMA buffer0 的数据进行 MMA 操作时，与此同时，TMA load 操作也在进行，譬如或许在对 TMA buffer1 进行数据写入；与此同时，tcgen05.ld 和 stage 操作也在进行（这两者统称为 draining），譬如对另一个 MMA buffer 中数据进行 draining；与此同时，TMA store 操作也在进行，譬如对已经 draining 结束的数据进行内存写入。
