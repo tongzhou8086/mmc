@@ -190,21 +190,14 @@ struct Store_Buffer {
   * 立刻打开 In 端口（同时关掉 Out）：数据已经被消费完了，可以重新装填
 
 // Waits
-// 每个 wait 都是阻塞的，等到对应端口打开为止。
-* wait_on_tma_buffer_in(tma_buffer)
-  * 等这块 TMA buffer 的 In 端口打开，即里面的数据已被 MMA 消费完，可以装新数据了
-* wait_on_tma_buffer_out(tma_buffer)
-  * 等 Out 端口打开，即 TMA load 已经完成，数据可以拿去做 MMA 了
-* wait_on_mma_buffer_in(mma_buffer)
-  * 等 In 端口打开，即上一个 output tile 已经 drain 完，这块 accumulator 可以重新用来累加了
-* wait_on_mma_buffer_out(mma_buffer)
-  * 等 Out 端口打开，即这个 output tile 的所有 k 迭代都累加完了，可以开始 drain
-* wait_on_ld_buffer_in(ld_buffer)
-  * 等 In 端口打开，即上一段数据已经 stage 进 SMEM，寄存器腾出来了
-* wait_on_ld_buffer_out(ld_buffer)
-  * 等 Out 端口打开，即 tcgen05.ld 已经把数据读进了寄存器
-* wait_on_store_buffer_in(store_buffer)
-  * 等 In 端口打开，即上一次 TMA store 已经把这块 SMEM 读完，可以写新数据了
+// 两个 wait 对四种 buffer 通用，都是阻塞的，等到对应端口打开为止。
+// 注意它们和上面两个信号是一一对应的：make_ready 打开的端口由 wait_until_ready 等待，make_free 同理。
+* wait_until_ready(buffer)
+  * 阻塞，直到该 buffer 的 Out 端口打开，即里面的数据已经写好了，可以拿去消费
+  * 四种 buffer 通用：等 TMA buffer 就是等 TMA load 落地，等 MMA buffer 就是等一个 output tile 的所有 k 迭代累加完
+* wait_until_free(buffer)
+  * 阻塞，直到该 buffer 的 In 端口打开，即里面的数据已经被消费完了，可以重新装填
+  * 同样四种通用：等 TMA buffer 就是等 MMA 消费完，等 store buffer 就是等上一次 TMA store 把这块 SMEM 读完
 
 ```
   
@@ -234,7 +227,7 @@ gk = 0
 for tile in my_output_tiles:                 # 持久化 kernel：每个 CTA 处理若干 output tile
     for k in range(num_k):
         s = (gk++) % NS                      # 在 NS 个 buffer 上轮转
-        wait_on_tma_buffer_in(tma_buffers[s])
+        wait_until_free(tma_buffers[s])
         tma_load_async(A, tile.m, k * BK, BM,     BK,       tma_buffers[s], 0)
         tma_load_async(B, k * BK, tile.n, BK,     BN / 2,   tma_buffers[s], 16KB)
         make_ready_on_tma_done(tma_buffers[s])
@@ -245,9 +238,9 @@ for tile in my_output_tiles:
     acc = tile % NUM_ACC                     # 每换一个 output tile 就换一个 MMA buffer
     for k in range(num_k):
         s = (gk++) % NS
-        wait_on_tma_buffer_out(tma_buffers[s])
+        wait_until_ready(tma_buffers[s])
         if k == 0:
-            wait_on_mma_buffer_in(mma_buffers[acc])
+            wait_until_free(mma_buffers[acc])
         issue_mma_chain_async(mma_buffers[acc], tma_buffers[s], accumulate = (k > 0))
         make_free_on_mma_done(tma_buffers[s])    # MMA 消费完这片数据，TMA buffer 就能重新装填
     make_ready_on_mma_done(mma_buffers[acc])     # num_k 次累加全部完成，可以 drain 了
@@ -256,7 +249,7 @@ for tile in my_output_tiles:
 gs = 0
 for tile in my_output_tiles:
     acc = tile % NUM_ACC
-    wait_on_mma_buffer_out(mma_buffers[acc])
+    wait_until_ready(mma_buffers[acc])
     for c in range(BN / STORE_N):            # 一次处理 64 列
         tcgen05_ld_x32_async(mma_buffers[acc], c * STORE_N, ld_buffer, 0)
         tcgen05_wait_ld()
@@ -264,7 +257,7 @@ for tile in my_output_tiles:
             make_free(mma_buffers[acc])  # 最后一段读进寄存器即可释放 MMA buffer
 
         b = (gs++) % NUM_STORE
-        wait_on_store_buffer_in(store_buffers[b])
+        wait_until_free(store_buffers[b])
         stage(ld_buffer, store_buffers[b])   # RMEM -> SMEM，同步
         make_ready(store_buffers[b])
         tma_store_async(store_buffers[b], C[tile, c])
@@ -342,7 +335,7 @@ gk = 0
 for tile in my_output_tiles:
     for k in range(num_k):
         s = (gk++) % NS
-        wait_on_tma_buffer_in(tma_buffers[s])
+        wait_until_free(tma_buffers[s])
         tma_load_async(A, tile.m, k * BK, BM,   BK,     tma_buffers[s], 0)
         tma_load_async(B, k * BK, tile.n, BK,   BN / 2, tma_buffers[s], 16KB)
         make_ready_on_tma_done(tma_buffers[s])
@@ -352,9 +345,9 @@ gk = 0
 for tile in my_output_tiles:
     for k in range(num_k):
         s = (gk++) % NS
-        wait_on_tma_buffer_out(tma_buffers[s])
+        wait_until_ready(tma_buffers[s])
         if k == 0:
-            wait_on_mma_buffer_in(mma_buffer)   # 只有一个 accumulator：必须等上个 tile 彻底 drain 完
+            wait_until_free(mma_buffer)   # 只有一个 accumulator：必须等上个 tile 彻底 drain 完
         issue_mma_chain_async(mma_buffer, tma_buffers[s], accumulate = (k > 0))
         make_free_on_mma_done(tma_buffers[s])
     make_ready_on_mma_done(mma_buffer)
@@ -362,7 +355,7 @@ for tile in my_output_tiles:
 # ── Epilogue Warps ───────────────────────────────────
 gs = 0
 for tile in my_output_tiles:
-    wait_on_mma_buffer_out(mma_buffer)
+    wait_until_ready(mma_buffer)
     for c in range(BN / STORE_N):            # 一次处理 64 列，一共 8 段
         tcgen05_ld_x32_async(mma_buffer, c * STORE_N, ld_buffer, 0)
         tcgen05_wait_ld()
@@ -370,14 +363,14 @@ for tile in my_output_tiles:
             make_free(mma_buffer)        # 最后一段读完即可释放，让下一个 tile 的 MMA 尽早开始
 
         b = (gs++) % NUM_STORE
-        wait_on_store_buffer_in(store_buffers[b])
+        wait_until_free(store_buffers[b])
         stage(ld_buffer, store_buffers[b])
         make_ready(store_buffers[b])
         tma_store_async(store_buffers[b], C[tile, c])
         make_free_on_tma_done(store_buffers[b])
 ```
 
-和 BN256 版本对比，结构上其实只差了一处：`wait_on_mma_buffer_in` 前面没有了 `acc = tile % NUM_ACC` 这一层轮转。只有一个 accumulator，所以下一个 output tile 的第一次 MMA 必须等到当前 tile 完全 drain 完才能发出，这就是前面说的「卡一下」。epilogue 本身则和 BN256 完全一样，仍然是 8 个 64 列的 chunk 依次读出、stage、store。
+和 BN256 版本对比，结构上其实只差了一处：`wait_until_free` 前面没有了 `acc = tile % NUM_ACC` 这一层轮转。只有一个 accumulator，所以下一个 output tile 的第一次 MMA 必须等到当前 tile 完全 drain 完才能发出，这就是前面说的「卡一下」。epilogue 本身则和 BN256 完全一样，仍然是 8 个 64 列的 chunk 依次读出、stage、store。
 
 ### 性能数字
 
