@@ -221,19 +221,16 @@ def _select_kernel(
     and the cache key carries it, so the MXFP8 and BF16 winners for one shape
     never collide. dtype is used only in error messages.
 
-    tuning_include optionally restricts tuning to the named kernels. Because the
-    winner of a restricted set is not the winner of the full set, that mode
-    neither reads nor writes the cache - it is for comparing a chosen few, not
-    for selecting what to run.
+    tuning_include restricts tuning to the named kernels. Like print_tuning it
+    is meant to accompany retune=True, and the winner it picks is not cached,
+    since the winner of a subset is not the winner of the full set.
     """
     if benchmark_runs < 1:
         raise ValueError("benchmark_runs must be positive")
     warmup_ms, rep_ms = _tuning_window_ms(tuning_window)
 
-    include = None
     if tuning_include is not None:
-        include = list(dict.fromkeys(tuning_include))
-        unknown = [name for name in include if name not in kernel_by_name]
+        unknown = set(tuning_include) - set(kernel_by_name)
         if unknown:
             raise ValueError(
                 f"unknown {dtype} kernel name(s) in tuning_include: "
@@ -243,7 +240,7 @@ def _select_kernel(
     cache = _read_cache()
     key = _cache_key(runtime, kernel_set_version, m, n, k)
     cached = cache.get(key)
-    if include is None and not retune and cached in kernel_by_name:
+    if not retune and cached in kernel_by_name:
         spec = kernel_by_name[cached]
         if (
             k % spec.bk == 0
@@ -258,14 +255,12 @@ def _select_kernel(
         if k % spec.bk == 0
         and m % spec.m_multiple == 0
         and n % spec.n_multiple == 0
-        and (include is None or spec.name in include)
+        and (tuning_include is None or spec.name in tuning_include)
     ]
     if not candidates:
-        if include is not None:
-            raise ValueError(
-                f"none of the requested {dtype} kernels fit M={m}, N={n}, K={k}"
-            )
-        raise ValueError(f"no bundled {dtype} kernel is compatible with K={k}")
+        raise ValueError(
+            f"no {dtype} kernel is compatible with M={m}, N={n}, K={k}"
+        )
     timings = {spec.name: [] for spec in candidates}
     for _ in range(benchmark_runs):
         shuffled = candidates.copy()
@@ -282,7 +277,8 @@ def _select_kernel(
     if print_tuning:
         _print_tuning_results(median_timings, m, n, k)
     winner = min(candidates, key=lambda spec: median_timings[spec.name])
-    if include is None:
+    if tuning_include is None:
+        # A subset's winner is not the full set's winner, so it is not cached.
         cache[key] = winner.name
         _write_cache(cache)
     return winner
@@ -342,8 +338,8 @@ def matmul_mxfp8_out(
     unless retune is True. Autotuning uses Triton's do_bench internally. Pass
     retune=True and print_tuning=True to print per-kernel tuning TFLOP/s.
     tuning_window selects 500/500, 1000/1000, or 1000/2000 ms windows.
-    tuning_include optionally restricts tuning to a list of kernel names; that
-    mode bypasses the cache, since the winner of a subset is not the winner.
+    tuning_include restricts tuning to a list of kernel names; like
+    print_tuning it is meant to accompany retune=True.
     """
     m, n, k = _validate_quantized(a, b, sfa, sfb)
     if out.device != a.device:

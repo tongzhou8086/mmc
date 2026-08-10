@@ -156,7 +156,7 @@ def test_bf16_tuning_include_with_no_compatible_kernel():
     # N=320 fits no CUDA kernel, so restricting to one leaves nothing to tune.
     a = torch.randn((256, 128), dtype=torch.bfloat16, device="cuda")
     b = torch.randn((128, 320), dtype=torch.bfloat16, device="cuda")
-    with pytest.raises(ValueError, match="none of the requested"):
+    with pytest.raises(ValueError, match="no bf16 kernel is compatible"):
         mmc.matmul_bf16(
             a, b, retune=True,
             tuning_include=["bf16-double-ns6-store2-bk64"],

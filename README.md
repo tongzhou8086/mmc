@@ -112,9 +112,8 @@ C = mmc.matmul_bf16(A, B, retune=True, print_tuning=True,
 python benchmarks/tune_matmul_bf16.py 8192 --include bf16-double-ns6-store2-bk64,torch.matmul
 ```
 
-The winner of a subset is not the winner of the full set, so this mode neither
-reads nor writes the autotune cache — it is for comparing a chosen few, not for
-selecting what to run.
+Like `print_tuning`, this is meant to accompany `retune=True`. The winner of a
+subset is not the winner of the full set, so it is not written to the cache.
 
 The winner is stored in:
 
