@@ -125,3 +125,39 @@ def test_bf16_unaligned_shape_falls_back_to_torch(tmp_path, monkeypatch, capsys)
     reference = (a.float() @ b.float())
     error = (result.float() - reference).abs().max() / reference.abs().max()
     assert error < 0.02
+
+
+def test_bf16_tuning_include_restricts_the_candidate_set(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("MMC_CACHE_DIR", str(tmp_path))
+    a = torch.randn((256, 256), dtype=torch.bfloat16, device="cuda")
+    b = torch.randn((256, 512), dtype=torch.bfloat16, device="cuda")
+    wanted = ["bf16-double-ns6-store2-bk64", "torch.matmul"]
+
+    mmc.matmul_bf16(a, b, retune=True, print_tuning=True, tuning_include=wanted)
+    printed = capsys.readouterr().out
+    for name in wanted:
+        assert name in printed, name
+    for spec in BF16_KERNELS:
+        if spec.name not in wanted:
+            assert spec.name not in printed, spec.name
+
+    # A subset's winner is not the full set's winner, so nothing is cached.
+    assert not (Path(tmp_path) / "autotune.json").exists()
+
+
+def test_bf16_tuning_include_rejects_unknown_names():
+    a = torch.randn((256, 256), dtype=torch.bfloat16, device="cuda")
+    b = torch.randn((256, 512), dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(ValueError, match="unknown"):
+        mmc.matmul_bf16(a, b, retune=True, tuning_include=["not-a-kernel"])
+
+
+def test_bf16_tuning_include_with_no_compatible_kernel():
+    # N=320 fits no CUDA kernel, so restricting to one leaves nothing to tune.
+    a = torch.randn((256, 128), dtype=torch.bfloat16, device="cuda")
+    b = torch.randn((128, 320), dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(ValueError, match="no bf16 kernel is compatible"):
+        mmc.matmul_bf16(
+            a, b, retune=True,
+            tuning_include=["bf16-double-ns6-store2-bk64"],
+        )

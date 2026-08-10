@@ -211,6 +211,7 @@ def _select_kernel(
     retune=False,
     print_tuning=False,
     tuning_window=1,
+    tuning_include=None,
 ):
     """Return the fastest compatible spec for a shape, caching the winner.
 
@@ -219,10 +220,22 @@ def _select_kernel(
     spec on the caller's operands. Each data type has its own kernel-set version
     and the cache key carries it, so the MXFP8 and BF16 winners for one shape
     never collide. dtype is used only in error messages.
+
+    tuning_include restricts tuning to the named kernels. Like print_tuning it
+    is meant to accompany retune=True, and the winner it picks is not cached,
+    since the winner of a subset is not the winner of the full set.
     """
     if benchmark_runs < 1:
         raise ValueError("benchmark_runs must be positive")
     warmup_ms, rep_ms = _tuning_window_ms(tuning_window)
+
+    if tuning_include is not None:
+        unknown = set(tuning_include) - set(kernel_by_name)
+        if unknown:
+            raise ValueError(
+                f"unknown {dtype} kernel name(s) in tuning_include: "
+                + ", ".join(sorted(unknown))
+            )
 
     cache = _read_cache()
     key = _cache_key(runtime, kernel_set_version, m, n, k)
@@ -242,9 +255,12 @@ def _select_kernel(
         if k % spec.bk == 0
         and m % spec.m_multiple == 0
         and n % spec.n_multiple == 0
+        and (tuning_include is None or spec.name in tuning_include)
     ]
     if not candidates:
-        raise ValueError(f"no bundled {dtype} kernel is compatible with K={k}")
+        raise ValueError(
+            f"no {dtype} kernel is compatible with M={m}, N={n}, K={k}"
+        )
     timings = {spec.name: [] for spec in candidates}
     for _ in range(benchmark_runs):
         shuffled = candidates.copy()
@@ -261,8 +277,10 @@ def _select_kernel(
     if print_tuning:
         _print_tuning_results(median_timings, m, n, k)
     winner = min(candidates, key=lambda spec: median_timings[spec.name])
-    cache[key] = winner.name
-    _write_cache(cache)
+    if tuning_include is None:
+        # A subset's winner is not the full set's winner, so it is not cached.
+        cache[key] = winner.name
+        _write_cache(cache)
     return winner
 
 
@@ -311,6 +329,7 @@ def matmul_mxfp8_out(
     retune=False,
     print_tuning=False,
     tuning_window=1,
+    tuning_include=None,
 ):
     """Compute into a reusable BF16 output tensor.
 
@@ -319,6 +338,8 @@ def matmul_mxfp8_out(
     unless retune is True. Autotuning uses Triton's do_bench internally. Pass
     retune=True and print_tuning=True to print per-kernel tuning TFLOP/s.
     tuning_window selects 500/500, 1000/1000, or 1000/2000 ms windows.
+    tuning_include restricts tuning to a list of kernel names; like
+    print_tuning it is meant to accompany retune=True.
     """
     m, n, k = _validate_quantized(a, b, sfa, sfb)
     if out.device != a.device:
@@ -346,6 +367,7 @@ def matmul_mxfp8_out(
             retune=retune,
             print_tuning=print_tuning,
             tuning_window=tuning_window,
+            tuning_include=tuning_include,
         )
         runtime.launch_mxfp8(spec, a, b, sfa, sfb, out)
         return out
@@ -359,6 +381,7 @@ def matmul_mxfp8(
     retune=False,
     print_tuning=False,
     tuning_window=1,
+    tuning_include=None,
 ):
     """Allocate and return C[M,N] for quantized A[M,K] and B[N,K]."""
     m, n = a.shape[0], b.shape[0]
@@ -372,6 +395,7 @@ def matmul_mxfp8(
         retune=retune,
         print_tuning=print_tuning,
         tuning_window=tuning_window,
+        tuning_include=tuning_include,
     )
 
 
@@ -382,6 +406,7 @@ def matmul_bf16_out(
     retune=False,
     print_tuning=False,
     tuning_window=1,
+    tuning_include=None,
 ):
     """Compute out[M,N] = A[M,K] @ B[K,N] for BF16 operands.
 
@@ -415,6 +440,7 @@ def matmul_bf16_out(
             retune=retune,
             print_tuning=print_tuning,
             tuning_window=tuning_window,
+            tuning_include=tuning_include,
         )
         runtime.launch_bf16(spec, a, b, out)
         return out
@@ -426,6 +452,7 @@ def matmul_bf16(
     retune=False,
     print_tuning=False,
     tuning_window=1,
+    tuning_include=None,
 ):
     """Allocate and return C[M,N] for BF16 A[M,K] and B[K,N]."""
     m, n = a.shape[0], b.shape[1]
@@ -437,4 +464,5 @@ def matmul_bf16(
         retune=retune,
         print_tuning=print_tuning,
         tuning_window=tuning_window,
+        tuning_include=tuning_include,
     )

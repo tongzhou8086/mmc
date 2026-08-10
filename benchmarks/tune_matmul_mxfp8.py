@@ -23,7 +23,16 @@ def parse_shape(value):
     return shape
 
 
-def tune_shape(m, n, k, b_transposed=False, tuning_window=1):
+
+def _parse_include(values):
+    """--include may repeat or carry comma-separated names; None means all."""
+    if not values:
+        return None
+    names = [n.strip() for value in values for n in value.split(",") if n.strip()]
+    return names or None
+
+def tune_shape(m, n, k, b_transposed=False, tuning_window=1,
+               include=None):
     a = torch.randn((m, k), dtype=torch.bfloat16, device="cuda")
     if b_transposed:
         b = torch.randn((n, k), dtype=torch.bfloat16, device="cuda")
@@ -43,6 +52,7 @@ def tune_shape(m, n, k, b_transposed=False, tuning_window=1):
         retune=True,
         print_tuning=True,
         tuning_window=tuning_window,
+        tuning_include=include,
     )
     torch.cuda.synchronize()
 
@@ -70,7 +80,16 @@ def main():
         default=1,
         help="autotuning window: 1=500/500 ms, 2=1000/1000 ms, 3=1000/2000 ms",
     )
+    parser.add_argument(
+        "--include",
+        action="append",
+        metavar="KERNEL",
+        help="restrict tuning to these kernels; repeat or comma-separate. "
+             "Bypasses the autotune cache, since the winner of a subset is "
+             "not the winner of the full set.",
+    )
     args = parser.parse_args()
+    include = _parse_include(args.include)
 
     for index, (m, n, k) in enumerate(args.shapes):
         if index:
@@ -81,6 +100,7 @@ def main():
             k,
             b_transposed=args.b_transposed,
             tuning_window=args.tuning_window,
+            include=include,
         )
 
 

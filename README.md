@@ -99,6 +99,22 @@ To inspect tuning results from the command line:
 python benchmarks/tune_matmul_mxfp8.py 4096 8192x8192x8192
 ```
 
+To tune over only some of the bundled kernels, pass `tuning_include` a list of
+names, or `--include` on either tuning script (repeat it, or comma-separate):
+
+```python
+C = mmc.matmul_bf16(A, B, retune=True, print_tuning=True,
+                    tuning_include=["bf16-double-ns6-store2-bk64",
+                                    "bf16-double-ns3-store2-bk128"])
+```
+
+```bash
+python benchmarks/tune_matmul_bf16.py 8192 --include bf16-double-ns6-store2-bk64,torch.matmul
+```
+
+Like `print_tuning`, this is meant to accompany `retune=True`. The winner of a
+subset is not the winner of the full set, so it is not written to the cache.
+
 The winner is stored in:
 
 ```text
