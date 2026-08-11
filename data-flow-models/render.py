@@ -904,6 +904,24 @@ LEVEL_EDGE = {"HBM": "#9aa5b1", "SMEM": "#7f9dbb",
               "TMEM": "#79a888", "RMEM": "#c9a668"}
 
 
+def _timeline_slab(ax, cx, cy, name, level, w=0.46, h=0.95):
+    """A buffer drawn as a narrow slab, with its name below it.
+
+    On a timeline the box is a marker for where the data is, not the subject of
+    the row, so it stays narrow and lets the arrows carry the width.
+    """
+    ax.add_patch(FancyBboxPatch(
+        (cx - w / 2, cy - h / 2), w, h,
+        boxstyle="round,pad=0.01,rounding_size=0.06",
+        linewidth=1.6, edgecolor=LEVEL_EDGE[level], facecolor=LEVEL_FACE[level],
+        linestyle=(0, (3, 2)) if name == "Memory" else "solid", zorder=3,
+    ))
+    ax.text(cx, cy - h / 2 - 0.26, name, ha="center", va="center",
+            fontsize=9.5, fontweight="bold", color=INK, zorder=4)
+    ax.text(cx, cy - h / 2 - 0.52, level, ha="center", va="center",
+            fontsize=8.5, color=MUTED, zorder=4)
+
+
 def _timeline_box(ax, cx, cy, name, level, w=3.0, h=0.9):
     """One buffer, tinted by the memory level it sits in.
 
@@ -923,74 +941,85 @@ def _timeline_box(ax, cx, cy, name, level, w=3.0, h=0.9):
 
 
 def pipeline_timeline():
-    """The five operations of one output tile, in sequence.
+    """The five operations of one output tile, as a staircase in time.
 
-    Each row is one step: the source buffer, an arrow labelled with the
-    operation, and the destination buffer. Reading down gives the order; the
-    box tints give the memory hierarchy the data walks through.
+    Time runs left to right: each operation starts where the previous one
+    finished, so the arrows step down and across. A narrow slab at each step
+    corner marks where the data is sitting at that moment, tinted by memory
+    level, which gives the hierarchy the chain walks through.
 
-    Two assumptions, both stated on the figure: a single k iteration, so the
-    MMA appears once rather than looping, and a single output tile.
+    The staircase carries only half the dependency structure - an operation
+    needs the previous one's output - and deliberately not the other half, that
+    the destination buffer must also be free. That second condition is what the
+    data-flow model exists to express, so leaving it out here is what motivates
+    the next section.
+
+    Also drawn for a single k iteration and a single output tile.
     """
-    fig, ax = plt.subplots(figsize=(11.8, 7.6))
-    steps = [
-        ("Memory", "HBM", "TMA buffer", "SMEM", "TMA load", "HBM  →  SMEM"),
-        ("TMA buffer", "SMEM", "MMA buffer", "TMEM", "MMA", "SMEM  →  TMEM"),
-        ("MMA buffer", "TMEM", "tcgen05.ld buffer", "RMEM",
-         "tcgen05.ld", "TMEM  →  RMEM"),
-        ("tcgen05.ld buffer", "RMEM", "Store buffer", "SMEM",
-         "stage", "RMEM  →  SMEM"),
-        ("Store buffer", "SMEM", "Memory", "HBM", "TMA store", "SMEM  →  HBM"),
-    ]
-    src_x, dst_x, top, gap = 3.35, 8.95, 6.30, 1.28
-    for i, (sname, slevel, dname, dlevel, op, note) in enumerate(steps):
-        cy = top - i * gap
-        _timeline_box(ax, src_x, cy, sname, slevel)
-        _timeline_box(ax, dst_x, cy, dname, dlevel)
+    fig, ax = plt.subplots(figsize=(14.0, 7.0))
+
+    boxes = [("Memory", "HBM"), ("TMA buffer", "SMEM"), ("MMA buffer", "TMEM"),
+             ("tcgen05.ld buffer", "RMEM"), ("Store buffer", "SMEM"),
+             ("Memory", "HBM")]
+    ops = ["TMA load", "MMA", "tcgen05.ld", "stage", "TMA store"]
+
+    BW, BH, DX, DY = 0.46, 0.95, 3.15, 1.62
+    x0, top = 1.45, 6.20
+    xs = [x0 + i * DX for i in range(6)]
+    ys = [top - i * DY for i in range(5)] + [top - 4 * DY]
+
+    for i, (name, level) in enumerate(boxes):
+        _timeline_slab(ax, xs[i], ys[i], name, level, w=BW, h=BH)
+
+    for i, op in enumerate(ops):
+        y_from, y_to = ys[i], ys[i + 1]
         ax.add_patch(FancyArrowPatch(
-            (src_x + 1.55, cy), (dst_x - 1.55, cy), arrowstyle="-|>",
-            mutation_scale=18, linewidth=2.0, color=INK,
-            shrinkA=0, shrinkB=0, zorder=3))
-        mid = (src_x + dst_x) / 2
-        ax.text(mid, cy + 0.27, op, ha="center", va="center", fontsize=11,
-                fontweight="bold", color=INK, zorder=4)
-        ax.text(mid, cy - 0.26, note, ha="center", va="center", fontsize=8.5,
-                color=MUTED, zorder=4)
+            (xs[i] + BW / 2, y_from), (xs[i + 1], y_to + BH / 2),
+            arrowstyle="-|>", mutation_scale=17, linewidth=2.0, color=INK,
+            shrinkA=0, shrinkB=0, zorder=2,
+            connectionstyle="angle,angleA=0,angleB=90,rad=0",
+        ))
+        ax.text((xs[i] + BW / 2 + xs[i + 1]) / 2, y_from + 0.28, op,
+                ha="center", va="center", fontsize=11, fontweight="bold",
+                color=INK, zorder=4)
 
+    base = top - 4 * DY - 1.15
     ax.add_patch(FancyArrowPatch(
-        (0.78, top + 0.62), (0.78, top - 4 * gap - 0.62), arrowstyle="-|>",
+        (0.45, base), (xs[5] + 0.9, base), arrowstyle="-|>",
         mutation_scale=16, linewidth=1.6, color=MUTED, shrinkA=0, shrinkB=0))
-    ax.text(0.42, top - 2 * gap, "time", ha="center", va="center",
-            fontsize=10, color=MUTED, rotation=90)
+    ax.text(0.45, base + 0.30, "time", ha="left", va="center",
+            fontsize=10, color=MUTED)
 
-    ax.text(0.30, 7.52, "One output tile, step by step", ha="left",
+    ax.text(0.30, 7.35, "One output tile, step by step", ha="left",
             va="center", fontsize=15, fontweight="bold", color=INK)
-    ax.text(0.30, 7.15,
-            "each arrow is one operation; the boxes are where the data sits",
+    ax.text(0.30, 6.98,
+            "time runs left to right; each operation starts where the previous "
+            "one finished, and each slab is where the data sits",
             ha="left", va="center", fontsize=10.5, color=MUTED)
 
-    lx = 11.05
-    ax.text(lx, 6.62, "Memory level", ha="left", va="center", fontsize=10,
+    lx = 14.9
+    ax.text(lx, 6.55, "Memory level", ha="left", va="center", fontsize=10,
             fontweight="bold", color=INK)
     for i, lvl in enumerate(("HBM", "SMEM", "TMEM", "RMEM")):
-        yy = 6.15 - i * 0.42
+        yy = 6.13 - i * 0.40
         ax.add_patch(FancyBboxPatch(
-            (lx, yy - 0.13), 0.34, 0.26,
+            (lx, yy - 0.12), 0.32, 0.24,
             boxstyle="round,pad=0.01,rounding_size=0.05", linewidth=1.4,
             edgecolor=LEVEL_EDGE[lvl], facecolor=LEVEL_FACE[lvl], zorder=2))
-        ax.text(lx + 0.46, yy, lvl, ha="left", va="center", fontsize=9.5,
+        ax.text(lx + 0.44, yy, lvl, ha="left", va="center", fontsize=9.5,
                 color=INK)
 
-    ax.text(0.30, -0.05,
-            "Drawn for one k iteration, so the MMA appears once — with more k "
-            "iterations step 2 repeats before step 3 can start — and for one "
-            "output tile.\n"
-            "In a real pipeline these steps overlap across tiles: this is the "
-            "dependency order, not a timeline to scale.",
+    ax.text(0.30, base - 0.78,
+            "The staircase shows only half the dependency: an operation needs "
+            "the previous one's output. It does not show the other "
+            "precondition — that the destination buffer is free —\n"
+            "which is what the data-flow model adds. Drawn for one k iteration "
+            "and one output tile; in a real pipeline these steps overlap "
+            "across tiles, so this is an order, not a timeline to scale.",
             ha="left", va="center", fontsize=9, color=INK, linespacing=1.5)
 
-    ax.set_xlim(0.0, 12.9)
-    ax.set_ylim(-0.60, 7.85)
+    ax.set_xlim(0.0, 18.4)
+    ax.set_ylim(base - 1.35, 7.65)
     ax.set_aspect("equal")
     ax.axis("off")
     fig.tight_layout()

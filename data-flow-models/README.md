@@ -64,19 +64,25 @@ flips when.
 
 ### `pipeline-timeline`
 
-The five operations of one output tile, in sequence. Each row is one step —
-source buffer, an arrow labelled with the operation, destination buffer — so
-reading down gives the dependency order, while the box tints give the memory
-hierarchy the data walks through: HBM → SMEM → TMEM → RMEM → SMEM → HBM.
+The five operations of one output tile, as a staircase in time. Time runs left to
+right and each operation starts where the previous one finished, which is how the
+figure shows they depend on one another. A narrow slab at each step corner marks
+where the data is sitting, tinted by memory level, so the chain
+HBM → SMEM → TMEM → RMEM → SMEM → HBM is visible at a glance.
 
 Memory is drawn dashed at both ends, because it is where the pipeline starts and
 finishes rather than a buffer the model synchronizes on.
 
-Two assumptions are stated on the figure. It is drawn for **one k iteration**, so
-the MMA appears once instead of looping — with more iterations, step 2 repeats
-before step 3 can begin — and for **one output tile**. In a real pipeline the
-five steps overlap across tiles; this is the order they depend on each other in,
-not a timeline to scale.
+The staircase carries only **half** the dependency structure: an operation needs
+the previous one's output. It does not show the other precondition — that the
+destination buffer is also free. An MMA needs its accumulator released as well
+as its input tile loaded, and nothing in this picture says so. That missing half
+is exactly what the data-flow model exists to express, which makes this figure a
+natural lead-in to it.
+
+Also drawn for **one k iteration**, so the MMA appears once instead of looping,
+and for **one output tile**. In a real pipeline the five steps overlap across
+tiles, so this is an order rather than a timeline to scale.
 
 ![One output tile, step by step](figures/pipeline-timeline.png)
 
