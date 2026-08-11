@@ -1090,9 +1090,115 @@ def pipeline_timeline_stall():
     return fig
 
 
+def _lane_bar(ax, x0, x1, y, label, face, edge, h=0.52):
+    ax.add_patch(FancyBboxPatch(
+        (x0, y - h / 2), x1 - x0, h,
+        boxstyle="round,pad=0.01,rounding_size=0.06",
+        linewidth=1.5, edgecolor=edge, facecolor=face, zorder=3))
+    ax.text((x0 + x1) / 2, y, label, ha="center", va="center", fontsize=9,
+            fontweight="bold", color=INK, zorder=4)
+
+
+def _idle_band(ax, x0, x1, y, h=0.52):
+    ax.add_patch(FancyBboxPatch(
+        (x0, y - h / 2), x1 - x0, h,
+        boxstyle="round,pad=0,rounding_size=0.04", linewidth=1.2,
+        edgecolor=STALL_EDGE, facecolor=STALL_FACE,
+        linestyle=(0, (3, 2)), zorder=2))
+
+
+def _overlap_panel(ax, y_top, title, n_buffers, subtitle):
+    """One panel: a TMA lane and an MMA lane, with the MMA's idle time shaded."""
+    L, K = 1.9, 3
+    x0 = 3.05
+    lane_tma, lane_mma = y_top, y_top - 0.78
+    ax.text(0.30, y_top + 0.92, title, ha="left", va="center", fontsize=11.5,
+            fontweight="bold", color=INK)
+    ax.text(0.30, y_top + 0.56, subtitle, ha="left", va="center", fontsize=9,
+            color=MUTED)
+    ax.text(x0 - 0.18, lane_tma, "TMA engine", ha="right", va="center",
+            fontsize=9.5, color=INK)
+    ax.text(x0 - 0.18, lane_mma, "MMA engine", ha="right", va="center",
+            fontsize=9.5, color=INK)
+
+    loads, mmas = [], []
+    if n_buffers == 1:
+        # one buffer: the next load cannot start until the MMA has drained it
+        t = 0.0
+        for k in range(K):
+            loads.append((t, t + L, k % n_buffers))
+            mmas.append((t + L, t + 2 * L, k % n_buffers))
+            t += 2 * L
+    else:
+        for k in range(K):
+            loads.append((k * L, (k + 1) * L, k % n_buffers))
+        for k in range(K):
+            mmas.append(((k + 1) * L, (k + 2) * L, k % n_buffers))
+
+    for k, (a, b, buf) in enumerate(loads):
+        _lane_bar(ax, x0 + a, x0 + b, lane_tma, f"load k={k} → buf{buf}",
+                  LEVEL_FACE["SMEM"], LEVEL_EDGE["SMEM"])
+    prev_end = 0.0
+    for k, (a, b, buf) in enumerate(mmas):
+        if a > prev_end:
+            _idle_band(ax, x0 + prev_end, x0 + a, lane_mma)
+        _lane_bar(ax, x0 + a, x0 + b, lane_mma, f"MMA k={k} ← buf{buf}",
+                  LEVEL_FACE["TMEM"], LEVEL_EDGE["TMEM"])
+        prev_end = b
+    return x0, prev_end, lane_mma
+
+
+def pipeline_timeline_overlap():
+    """Why several TMA buffers: the load for the next k-tile overlaps this MMA.
+
+    Two panels over a shared time axis. With one TMA buffer the load and the MMA
+    take turns, and the MMA engine idles for half the run. With two, the loads
+    run back to back and the MMA runs continuously after the first fill - the
+    same work in two thirds of the time.
+    """
+    fig, ax = plt.subplots(figsize=(12.4, 6.0))
+    x0, end1, _ = _overlap_panel(
+        ax, 3.85, "One TMA buffer", 1,
+        "the next load waits for the MMA to free the buffer")
+    _, end2, _ = _overlap_panel(
+        ax, 1.35, "Two TMA buffers", 2,
+        "the next load fills the other buffer while the MMA runs")
+
+    ax.add_patch(FancyArrowPatch(
+        (x0, 0.15), (x0 + end1 + 0.5, 0.15), arrowstyle="-|>",
+        mutation_scale=14, linewidth=1.4, color=MUTED, shrinkA=0, shrinkB=0))
+    ax.text(x0 - 0.18, 0.15, "time", ha="right", va="center", fontsize=9.5,
+            color=MUTED)
+    ax.plot([x0 + end2, x0 + end2], [0.05, 1.95], color=MUTED, linewidth=1.0,
+            linestyle=(0, (3, 3)), zorder=1)
+    L = 1.9
+    ax.text(x0 + end2 + 0.14, 0.58,
+            f"same 3 k-tiles in {end2 / L:.0f} operation-times\ninstead of "
+            f"{end1 / L:.0f}", ha="left", va="center", fontsize=9, color=INK,
+            linespacing=1.5)
+
+    ax.text(0.30, 5.80, "Why more than one TMA buffer", ha="left", va="center",
+            fontsize=15, fontweight="bold", color=INK)
+    ax.text(0.30, 5.43,
+            "red is the MMA engine sitting idle — the stall the extra buffer "
+            "removes", ha="left", va="center", fontsize=10.5, color=MUTED)
+    ax.text(0.30, -0.55,
+            "Bars are drawn equal length for legibility; a load and an MMA do "
+            "not take the same time in reality. The point is the overlap, not "
+            "the proportions.",
+            ha="left", va="center", fontsize=9, color=INK)
+    ax.set_xlim(0.0, 16.6)
+    ax.set_ylim(-0.95, 6.15)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
 FIGURES = {
     "pipeline-timeline": pipeline_timeline,
     "pipeline-timeline-stall": pipeline_timeline_stall,
+    "pipeline-timeline-overlap": pipeline_timeline_overlap,
     "buffer-kinds": buffer_kinds,
     "bn256-state1-tma-load": bn256_state1_tma_load,
     "bn256-state2-tma-and-mma": bn256_state2_tma_and_mma,

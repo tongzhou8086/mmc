@@ -99,6 +99,20 @@ rest of the article are for.
 
 ![The same tile, with a stall](figures/pipeline-timeline-stall.png)
 
+### `pipeline-timeline-overlap`
+
+Why a pipeline has more than one buffer of a kind, shown as two panels over a
+shared time axis. With one TMA buffer, the load and the MMA take turns — the next
+load cannot start until the MMA has drained the buffer — and the MMA engine sits
+idle for half the run, shaded red. With two, the loads run back to back and the
+MMA runs continuously once the pipeline has filled: the same three k-tiles in
+four operation-times instead of six.
+
+Bars are equal length for legibility; a load and an MMA do not take the same time
+in reality. The figure is about the overlap, not the proportions.
+
+![Why more than one TMA buffer](figures/pipeline-timeline-overlap.png)
+
 The six `bn256-state*` figures walk a whole pipeline. Overlap between the
 hardware engines is the point of the design, and these show which engines
 overlap and what lets them — the dependency structure that makes each operation
