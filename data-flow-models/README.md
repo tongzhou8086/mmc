@@ -62,6 +62,43 @@ flips when.
 
 ## Figures
 
+### `pipeline-timeline`
+
+The five operations of one output tile, as a staircase in time. Time runs left to
+right and each operation starts where the previous one finished, which is how the
+figure shows they depend on one another. A narrow slab at each step corner marks
+where the data is sitting, tinted by memory level, so the chain
+HBM → SMEM → TMEM → RMEM → SMEM → HBM is visible at a glance.
+
+Memory is drawn dashed at both ends, because it is where the pipeline starts and
+finishes rather than a buffer the model synchronizes on.
+
+The staircase carries only **half** the dependency structure: an operation needs
+the previous one's output. It does not show the other precondition — that the
+destination buffer is also free. An MMA needs its accumulator released as well
+as its input tile loaded, and nothing in this picture says so. That missing half
+is exactly what the data-flow model exists to express, which makes this figure a
+natural lead-in to it.
+
+Also drawn for **one k iteration**, so the MMA appears once instead of looping,
+and for **one output tile**. In a real pipeline the five steps overlap across
+tiles, so this is an order rather than a timeline to scale.
+
+![One output tile, step by step](figures/pipeline-timeline.png)
+
+### `pipeline-timeline-stall`
+
+The same staircase with a gap in it. The input tile has arrived — the first half
+of the dependency is satisfied — but the MMA still cannot start, because there is
+no free accumulator to write into. The gap is drawn on the MMA's own row, between
+the buffer it reads from and the point its arrow begins.
+
+This is the companion to the figure above: what that one leaves out, this one
+shows as a visible cost. Closing gaps like it is what the pipeline designs in the
+rest of the article are for.
+
+![The same tile, with a stall](figures/pipeline-timeline-stall.png)
+
 The six `bn256-state*` figures walk a whole pipeline. Overlap between the
 hardware engines is the point of the design, and these show which engines
 overlap and what lets them — the dependency structure that makes each operation
