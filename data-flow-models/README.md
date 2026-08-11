@@ -86,6 +86,19 @@ tiles, so this is an order rather than a timeline to scale.
 
 ![One output tile, step by step](figures/pipeline-timeline.png)
 
+### `pipeline-timeline-stall`
+
+The same staircase with a gap in it. The input tile has arrived — the first half
+of the dependency is satisfied — but the MMA still cannot start, because there is
+no free accumulator to write into. The gap is drawn on the MMA's own row, between
+the buffer it reads from and the point its arrow begins.
+
+This is the companion to the figure above: what that one leaves out, this one
+shows as a visible cost. Closing gaps like it is what the pipeline designs in the
+rest of the article are for.
+
+![The same tile, with a stall](figures/pipeline-timeline-stall.png)
+
 The six `bn256-state*` figures walk a whole pipeline. Overlap between the
 hardware engines is the point of the design, and these show which engines
 overlap and what lets them — the dependency structure that makes each operation

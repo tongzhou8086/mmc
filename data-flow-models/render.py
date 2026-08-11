@@ -940,68 +940,79 @@ def _timeline_box(ax, cx, cy, name, level, w=3.0, h=0.9):
             color=MUTED, zorder=4)
 
 
-def pipeline_timeline():
-    """The five operations of one output tile, as a staircase in time.
+STALL_FACE = "#fbeaed"
+STALL_EDGE = NOT_READY
 
-    Time runs left to right: each operation starts where the previous one
-    finished, so the arrows step down and across. A narrow slab at each step
-    corner marks where the data is sitting at that moment, tinted by memory
-    level, which gives the hierarchy the chain walks through.
+TIMELINE_BOXES = [("Memory", "HBM"), ("TMA buffer", "SMEM"),
+                  ("MMA buffer", "TMEM"), ("tcgen05.ld buffer", "RMEM"),
+                  ("Store buffer", "SMEM"), ("Memory", "HBM")]
+TIMELINE_OPS = ["TMA load", "MMA", "tcgen05.ld", "stage", "TMA store"]
 
-    The staircase carries only half the dependency structure - an operation
-    needs the previous one's output - and deliberately not the other half, that
-    the destination buffer must also be free. That second condition is what the
-    data-flow model exists to express, so leaving it out here is what motivates
-    the next section.
 
-    Also drawn for a single k iteration and a single output tile.
+def _draw_timeline(ax, gaps=None, x0=1.45, top=6.20):
+    """Draw the staircase. `gaps` maps an op index to (width, label).
+
+    A gap is drawn at that operation's own row, between the buffer it reads
+    from and the point its arrow starts - the operation's input is ready, but
+    something else is holding it up.
     """
-    fig, ax = plt.subplots(figsize=(14.0, 7.0))
-
-    boxes = [("Memory", "HBM"), ("TMA buffer", "SMEM"), ("MMA buffer", "TMEM"),
-             ("tcgen05.ld buffer", "RMEM"), ("Store buffer", "SMEM"),
-             ("Memory", "HBM")]
-    ops = ["TMA load", "MMA", "tcgen05.ld", "stage", "TMA store"]
-
-    BW, BH, DX, DY = 0.46, 0.95, 3.15, 1.62
-    x0, top = 1.45, 6.20
-    xs = [x0 + i * DX for i in range(6)]
+    gaps = gaps or {}
+    BW, BH, SEG, DY = 0.46, 0.95, 3.15, 1.62
+    xs, x = [x0], x0
+    for i in range(5):
+        x = x + SEG + gaps.get(i, (0.0, ""))[0]
+        xs.append(x)
     ys = [top - i * DY for i in range(5)] + [top - 4 * DY]
 
-    for i, (name, level) in enumerate(boxes):
+    for i, (name, level) in enumerate(TIMELINE_BOXES):
         _timeline_slab(ax, xs[i], ys[i], name, level, w=BW, h=BH)
 
-    for i, op in enumerate(ops):
+    for i, op in enumerate(TIMELINE_OPS):
+        gap_w, gap_label = gaps.get(i, (0.0, ""))
         y_from, y_to = ys[i], ys[i + 1]
-        ax.add_patch(FancyArrowPatch(
-            (xs[i] + BW / 2, y_from), (xs[i + 1], y_to + BH / 2),
-            arrowstyle="-|>", mutation_scale=17, linewidth=2.0, color=INK,
-            shrinkA=0, shrinkB=0, zorder=2,
-            connectionstyle="angle,angleA=0,angleB=90,rad=0",
-        ))
-        ax.text((xs[i] + BW / 2 + xs[i + 1]) / 2, y_from + 0.28, op,
-                ha="center", va="center", fontsize=11, fontweight="bold",
-                color=INK, zorder=4)
+        start_x = xs[i] + BW / 2 + gap_w
+        if gap_w:
+            ax.add_patch(FancyBboxPatch(
+                (xs[i] + BW / 2, y_from - 0.30), gap_w, 0.60,
+                boxstyle="round,pad=0,rounding_size=0.04", linewidth=1.3,
+                edgecolor=STALL_EDGE, facecolor=STALL_FACE,
+                linestyle=(0, (3, 2)), zorder=2))
+            # label above the band: below it would run into the buffer's own name
+            for j, line in enumerate(gap_label.split("\n")):
+                ax.text(xs[i] + BW / 2 + gap_w / 2, y_from + 0.80 - j * 0.26,
+                        line, ha="center", va="center", fontsize=8.5,
+                        color=STALL_EDGE, zorder=4)
+        # the last step ends on the same row, so it needs a plain horizontal
+        # arrow - an elbow would send its head upwards into the box
+        if y_to == y_from:
+            ax.add_patch(FancyArrowPatch(
+                (start_x, y_from), (xs[i + 1] - BW / 2, y_to),
+                arrowstyle="-|>", mutation_scale=17, linewidth=2.0, color=INK,
+                shrinkA=0, shrinkB=0, zorder=3))
+        else:
+            ax.add_patch(FancyArrowPatch(
+                (start_x, y_from), (xs[i + 1], y_to + BH / 2),
+                arrowstyle="-|>", mutation_scale=17, linewidth=2.0, color=INK,
+                shrinkA=0, shrinkB=0, zorder=3,
+                connectionstyle="angle,angleA=0,angleB=90,rad=0"))
+        ax.text((start_x + xs[i + 1]) / 2, y_from + 0.28, op, ha="center",
+                va="center", fontsize=11, fontweight="bold", color=INK,
+                zorder=4)
 
     base = top - 4 * DY - 1.15
     ax.add_patch(FancyArrowPatch(
         (0.45, base), (xs[5] + 0.9, base), arrowstyle="-|>",
         mutation_scale=16, linewidth=1.6, color=MUTED, shrinkA=0, shrinkB=0))
-    ax.text(0.45, base + 0.30, "time", ha="left", va="center",
-            fontsize=10, color=MUTED)
+    ax.text(0.45, base + 0.30, "time", ha="left", va="center", fontsize=10,
+            color=MUTED)
+    return xs, ys, base
 
-    ax.text(0.30, 7.35, "One output tile, step by step", ha="left",
-            va="center", fontsize=15, fontweight="bold", color=INK)
-    ax.text(0.30, 6.98,
-            "time runs left to right; each operation starts where the previous "
-            "one finished, and each slab is where the data sits",
-            ha="left", va="center", fontsize=10.5, color=MUTED)
 
-    lx = 14.9
-    ax.text(lx, 6.55, "Memory level", ha="left", va="center", fontsize=10,
+def _timeline_legend(ax, lx, ly=6.55):
+    ax.text(lx, ly, "Memory level", ha="left", va="center", fontsize=10,
             fontweight="bold", color=INK)
     for i, lvl in enumerate(("HBM", "SMEM", "TMEM", "RMEM")):
-        yy = 6.13 - i * 0.40
+        yy = ly - 0.42 - i * 0.40
         ax.add_patch(FancyBboxPatch(
             (lx, yy - 0.12), 0.32, 0.24,
             boxstyle="round,pad=0.01,rounding_size=0.05", linewidth=1.4,
@@ -1009,6 +1020,29 @@ def pipeline_timeline():
         ax.text(lx + 0.44, yy, lvl, ha="left", va="center", fontsize=9.5,
                 color=INK)
 
+
+def pipeline_timeline():
+    """The five operations of one output tile, as a staircase in time.
+
+    Time runs left to right: each operation starts where the previous one
+    finished, so the arrows step down and across. A narrow slab at each step
+    corner marks where the data is sitting, tinted by memory level.
+
+    The staircase carries only half the dependency structure - an operation
+    needs the previous one's output - and deliberately not the other half, that
+    the destination buffer must also be free. That second condition is what the
+    data-flow model exists to express, so leaving it out here is what motivates
+    the next section.
+    """
+    fig, ax = plt.subplots(figsize=(14.0, 7.0))
+    xs, ys, base = _draw_timeline(ax)
+    ax.text(0.30, 7.35, "One output tile, step by step", ha="left",
+            va="center", fontsize=15, fontweight="bold", color=INK)
+    ax.text(0.30, 6.98,
+            "time runs left to right; each operation starts where the previous "
+            "one finished, and each slab is where the data sits",
+            ha="left", va="center", fontsize=10.5, color=MUTED)
+    _timeline_legend(ax, 14.9)
     ax.text(0.30, base - 0.78,
             "The staircase shows only half the dependency: an operation needs "
             "the previous one's output. It does not show the other "
@@ -1017,8 +1051,38 @@ def pipeline_timeline():
             "and one output tile; in a real pipeline these steps overlap "
             "across tiles, so this is an order, not a timeline to scale.",
             ha="left", va="center", fontsize=9, color=INK, linespacing=1.5)
-
     ax.set_xlim(0.0, 18.4)
+    ax.set_ylim(base - 1.35, 7.65)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
+def pipeline_timeline_stall():
+    """The same staircase, with a stall between the load and the MMA.
+
+    The input tile has arrived, so the first half of the dependency is met - but
+    the MMA still cannot start, because there is no free accumulator to write
+    into. The gap is exactly the condition the plain staircase cannot express.
+    """
+    fig, ax = plt.subplots(figsize=(14.6, 7.0))
+    gaps = {1: (1.15, "MMA buffer\nnot free")}
+    xs, ys, base = _draw_timeline(ax, gaps=gaps)
+    ax.text(0.30, 7.35, "The same tile, with a stall", ha="left", va="center",
+            fontsize=15, fontweight="bold", color=INK)
+    ax.text(0.30, 6.98,
+            "the input tile has arrived, but the MMA still cannot start",
+            ha="left", va="center", fontsize=10.5, color=MUTED)
+    _timeline_legend(ax, 16.0)
+    ax.text(0.30, base - 0.78,
+            "The gap is the half of the dependency the previous figure leaves "
+            "out. Data being ready is not enough — the MMA also needs a free "
+            "accumulator to write into,\n"
+            "and until the epilogue drains one it waits. Closing gaps like this "
+            "is what the rest of this article is about.",
+            ha="left", va="center", fontsize=9, color=INK, linespacing=1.5)
+    ax.set_xlim(0.0, 19.6)
     ax.set_ylim(base - 1.35, 7.65)
     ax.set_aspect("equal")
     ax.axis("off")
@@ -1028,6 +1092,7 @@ def pipeline_timeline():
 
 FIGURES = {
     "pipeline-timeline": pipeline_timeline,
+    "pipeline-timeline-stall": pipeline_timeline_stall,
     "buffer-kinds": buffer_kinds,
     "bn256-state1-tma-load": bn256_state1_tma_load,
     "bn256-state2-tma-and-mma": bn256_state2_tma_and_mma,
