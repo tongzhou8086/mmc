@@ -62,6 +62,24 @@ flips when.
 
 ## Figures
 
+### `pipeline-timeline`
+
+The five operations of one output tile, in sequence. Each row is one step —
+source buffer, an arrow labelled with the operation, destination buffer — so
+reading down gives the dependency order, while the box tints give the memory
+hierarchy the data walks through: HBM → SMEM → TMEM → RMEM → SMEM → HBM.
+
+Memory is drawn dashed at both ends, because it is where the pipeline starts and
+finishes rather than a buffer the model synchronizes on.
+
+Two assumptions are stated on the figure. It is drawn for **one k iteration**, so
+the MMA appears once instead of looping — with more iterations, step 2 repeats
+before step 3 can begin — and for **one output tile**. In a real pipeline the
+five steps overlap across tiles; this is the order they depend on each other in,
+not a timeline to scale.
+
+![One output tile, step by step](figures/pipeline-timeline.png)
+
 The six `bn256-state*` figures walk a whole pipeline. Overlap between the
 hardware engines is the point of the design, and these show which engines
 overlap and what lets them — the dependency structure that makes each operation

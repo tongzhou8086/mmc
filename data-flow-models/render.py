@@ -896,7 +896,109 @@ def bn256_state6_store_to_memory():
     return fig
 
 
+# Where each buffer lives. Colouring by level is what makes the hierarchy
+# readable at a glance: the chain walks HBM -> SMEM -> TMEM -> RMEM -> SMEM -> HBM.
+LEVEL_FACE = {"HBM": "#eceff3", "SMEM": "#e3edf7",
+              "TMEM": "#e7f2e9", "RMEM": "#f7efe2"}
+LEVEL_EDGE = {"HBM": "#9aa5b1", "SMEM": "#7f9dbb",
+              "TMEM": "#79a888", "RMEM": "#c9a668"}
+
+
+def _timeline_box(ax, cx, cy, name, level, w=3.0, h=0.9):
+    """One buffer, tinted by the memory level it sits in.
+
+    Memory itself is drawn dashed: it is an endpoint of the pipeline, not a
+    buffer the model synchronizes on.
+    """
+    ax.add_patch(FancyBboxPatch(
+        (cx - w / 2, cy - h / 2), w, h,
+        boxstyle="round,pad=0.02,rounding_size=0.10",
+        linewidth=1.6, edgecolor=LEVEL_EDGE[level], facecolor=LEVEL_FACE[level],
+        linestyle=(0, (4, 2.5)) if name == "Memory" else "solid", zorder=2,
+    ))
+    ax.text(cx, cy + 0.14, name, ha="center", va="center", fontsize=10.5,
+            fontweight="bold", color=INK, zorder=4)
+    ax.text(cx, cy - 0.19, level, ha="center", va="center", fontsize=9,
+            color=MUTED, zorder=4)
+
+
+def pipeline_timeline():
+    """The five operations of one output tile, in sequence.
+
+    Each row is one step: the source buffer, an arrow labelled with the
+    operation, and the destination buffer. Reading down gives the order; the
+    box tints give the memory hierarchy the data walks through.
+
+    Two assumptions, both stated on the figure: a single k iteration, so the
+    MMA appears once rather than looping, and a single output tile.
+    """
+    fig, ax = plt.subplots(figsize=(11.8, 7.6))
+    steps = [
+        ("Memory", "HBM", "TMA buffer", "SMEM", "TMA load", "HBM  →  SMEM"),
+        ("TMA buffer", "SMEM", "MMA buffer", "TMEM", "MMA", "SMEM  →  TMEM"),
+        ("MMA buffer", "TMEM", "tcgen05.ld buffer", "RMEM",
+         "tcgen05.ld", "TMEM  →  RMEM"),
+        ("tcgen05.ld buffer", "RMEM", "Store buffer", "SMEM",
+         "stage", "RMEM  →  SMEM"),
+        ("Store buffer", "SMEM", "Memory", "HBM", "TMA store", "SMEM  →  HBM"),
+    ]
+    src_x, dst_x, top, gap = 3.35, 8.95, 6.30, 1.28
+    for i, (sname, slevel, dname, dlevel, op, note) in enumerate(steps):
+        cy = top - i * gap
+        _timeline_box(ax, src_x, cy, sname, slevel)
+        _timeline_box(ax, dst_x, cy, dname, dlevel)
+        ax.add_patch(FancyArrowPatch(
+            (src_x + 1.55, cy), (dst_x - 1.55, cy), arrowstyle="-|>",
+            mutation_scale=18, linewidth=2.0, color=INK,
+            shrinkA=0, shrinkB=0, zorder=3))
+        mid = (src_x + dst_x) / 2
+        ax.text(mid, cy + 0.27, op, ha="center", va="center", fontsize=11,
+                fontweight="bold", color=INK, zorder=4)
+        ax.text(mid, cy - 0.26, note, ha="center", va="center", fontsize=8.5,
+                color=MUTED, zorder=4)
+
+    ax.add_patch(FancyArrowPatch(
+        (0.78, top + 0.62), (0.78, top - 4 * gap - 0.62), arrowstyle="-|>",
+        mutation_scale=16, linewidth=1.6, color=MUTED, shrinkA=0, shrinkB=0))
+    ax.text(0.42, top - 2 * gap, "time", ha="center", va="center",
+            fontsize=10, color=MUTED, rotation=90)
+
+    ax.text(0.30, 7.52, "One output tile, step by step", ha="left",
+            va="center", fontsize=15, fontweight="bold", color=INK)
+    ax.text(0.30, 7.15,
+            "each arrow is one operation; the boxes are where the data sits",
+            ha="left", va="center", fontsize=10.5, color=MUTED)
+
+    lx = 11.05
+    ax.text(lx, 6.62, "Memory level", ha="left", va="center", fontsize=10,
+            fontweight="bold", color=INK)
+    for i, lvl in enumerate(("HBM", "SMEM", "TMEM", "RMEM")):
+        yy = 6.15 - i * 0.42
+        ax.add_patch(FancyBboxPatch(
+            (lx, yy - 0.13), 0.34, 0.26,
+            boxstyle="round,pad=0.01,rounding_size=0.05", linewidth=1.4,
+            edgecolor=LEVEL_EDGE[lvl], facecolor=LEVEL_FACE[lvl], zorder=2))
+        ax.text(lx + 0.46, yy, lvl, ha="left", va="center", fontsize=9.5,
+                color=INK)
+
+    ax.text(0.30, -0.05,
+            "Drawn for one k iteration, so the MMA appears once — with more k "
+            "iterations step 2 repeats before step 3 can start — and for one "
+            "output tile.\n"
+            "In a real pipeline these steps overlap across tiles: this is the "
+            "dependency order, not a timeline to scale.",
+            ha="left", va="center", fontsize=9, color=INK, linespacing=1.5)
+
+    ax.set_xlim(0.0, 12.9)
+    ax.set_ylim(-0.60, 7.85)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
 FIGURES = {
+    "pipeline-timeline": pipeline_timeline,
     "buffer-kinds": buffer_kinds,
     "bn256-state1-tma-load": bn256_state1_tma_load,
     "bn256-state2-tma-and-mma": bn256_state2_tma_and_mma,
