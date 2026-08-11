@@ -25,37 +25,15 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 这些硬件单元都各有自己的设计上的限制，或者是通用性的最佳性能 practice，这也直接影响了我们的流水线设计。具体的限制以及影响，我们在后面具体的流水线设计中再展开。
 
-## 数据流动的全景图
-不论我们流水线编排如何设计，数据流动的总体的步骤是一样的，不同的编排方案的区别在于不同的同步方案、数据的读取、写入的粒度、Tile sizes 的配置、各种 buffer 的数量的配置等等。但数据的流动都遵循同样的步骤，大概分为下面这么几步：
-
-* 从内存到 SMEM：TMA engine 会首先把数据从内存（HBM，High-Bandwidth Memory，也就是常说的 GMEM / Global Memory）搬运到 SMEM
-* 从 SMEM 到 TMEM：MMA engine 从 SMEM 中读取计算需要的输入数据，计算结果保存在 TMEM 中
-* 从 TMEM 到寄存器：Accumulation 结束以后，数据便可以从 TMEM 中读取出来，暂存在寄存器（RMEM，Register Memory）中
-* 从寄存器到内存：暂存在寄存器中的数据，最后会被写入内存；事实上我们还会先把寄存器中的数据写入到 SMEM 中进行缓冲和重排，之后再交给 TMA 写入内存，以实现 memory write 的 coalescing
-
-把这五步画在一条时间线上就是下面这个样子。时间从左往右走，每个操作都从上一个操作结束的地方开始，中间的窄条表示此刻数据待在哪个 buffer 里，颜色则标出它所处的存储层级：
-
-![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline.png)
-
-不过这张图只画出了依赖关系的一半 —— 一个操作需要上一个操作的输出。另一半它没有画：目标 buffer 还必须是空闲的。下面这张图就是这另一半：
-
-![同一个 tile，出现了 stall](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline-stall.png)
-
-流水线调度设计的根本主旨是减少 MMA issue 的 stall。从第二个图中我们可以看出来，如果 MMA buffer 还没有 ready 的话，哪怕 TMA 加载的数据到位了，MMA 操作也依然无法 issue。
-
-这里实际上有两种不同的 MMA issue stall。一种是一个 output tile 内部多次 K 迭代之间的，这种 stall 我们可以使用多个 TMA buffer 来减少 —— 也就是说，在一次 MMA 操作进行的时候，TMA load 同时也在往另外一个 buffer 里面写入数据，这样等当前的 MMA 操作完成之后，它可以立即从另外一个 buffer 里面继续取数据进行 MMA 操作，而无需等待同一个 buffer。
-
-另一种 MMA issue stall 是连续的多个 output tile 之间的 stall。在连续的多个 output tile 之间，如果要进行 MMA 操作的话，不光是要 TMA 加载的数据到位，同样也还需要 MMA buffer 能够被写入。如果上一个 output tile 的 MMA 结果正在从 MMA buffer 中被读取出来、正在 draining 的过程中，那下一轮的就无法写入，不然就会覆盖数据。针对这样的 stall，我们也有两种解决方案：一种就是使用多个 MMA buffer，譬如两个；另外一种方案就是加快 draining 的过程，通过把数据先暂存到寄存器中，提前释放 MMA buffer。
-
-可以看出，数据会在不同的硬件单元、存储介质之间流动，而操作与操作之间具有依赖关系 —— 而且这个依赖关系不止「上一步的输出」这一层。这便涉及到下面这个章节的数据流建模。
-
 ## 数据流模型
+不论流水线怎么编排，数据流动的总体步骤都是一样的，不同方案的区别在于同步方案、数据读写的粒度、tile sizes 的配置、各种 buffer 的数量等等。为了能把这些区别讲清楚，我们先建立一个数据流模型。
+
 流水线的资源调度涉及如下四种 buffer:
 
-* TMA buffer: 存放 TMA 从内存中加载的数据
-* MMA buffer: 存放 MMA 的中间结果以及最终结果
-* tcgen05.ld buffer: 存放从 TMEM 中读取的结果
-* Store buffer: 存放要写入内存的数据
+* TMA buffer（位于 SMEM）: 存放 TMA 从内存（HBM，High-Bandwidth Memory，也就是常说的 GMEM / Global Memory）中加载的数据
+* MMA buffer（位于 TMEM）: 存放 MMA 的中间结果以及最终结果
+* tcgen05.ld buffer（位于寄存器，即 RMEM，Register Memory）: 存放从 TMEM 中读取的结果
+* Store buffer（位于 SMEM）: 存放要写入内存的数据
 
 用图形化的表示方式如下。
 
@@ -81,7 +59,25 @@ Buffer 和 Buffer 之间的数据流动通过“操作”完成，我们定义�
 <img width="500" alt="图片" src="https://github.com/user-attachments/assets/1f7b980d-88cb-45de-bed7-0198a390f63a" />
 
 
-除了 Buffer 和操作，数据流模型的第三个要素是信号（signal）。信号的作用很简单：翻转 Buffer 的开关。上图中的四种类型的 Buffer 都会有两个自己配套的信号，一个代表“打开输入端口、关闭输出端口”，另一个则相反，代表“打开输出开关，关闭输入开关”；从语义上讲，前者代表 “buffer free”，而后者代表 “data ready”。下图代表了一个 TMA buffer 分别接收 data ready 和 buffer free 信号后端口状态的切换。
+到这里，buffer、端口、操作、以及一个操作能够开始的条件都定义完了。但还缺一样东西：端到端地看，数据究竟是怎么一步步从一个 buffer 走到下一个 buffer 的。把这五个操作按时间画出来，就是下面这个样子。时间从左往右走，每个操作都从上一个操作结束的地方开始，中间的窄条表示此刻数据待在哪个 buffer 里，颜色则标出它所处的存储层级：
+
+![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline.png)
+
+注意这张图只画出了上面那条规则的一半 —— 源 buffer 的输出端口开着。另一半，即目的 buffer 的输入端口也得开着，图上是看不出来的。把它违反掉，就会出现下面这种情况：
+
+![同一个 tile，出现了 stall](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline-stall.png)
+
+流水线调度设计的根本主旨是减少 MMA issue 的 stall。从第二个图中我们可以看出来，如果 MMA buffer 还没有 ready 的话，哪怕 TMA 加载的数据到位了，MMA 操作也依然无法 issue。
+
+这里实际上有两种不同的 MMA issue stall。一种是一个 output tile 内部多次 K 迭代之间的，这种 stall 我们可以使用多个 TMA buffer 来减少 —— 也就是说，在一次 MMA 操作进行的时候，TMA load 同时也在往另外一个 buffer 里面写入数据，这样等当前的 MMA 操作完成之后，它可以立即从另外一个 buffer 里面继续取数据进行 MMA 操作，而无需等待同一个 buffer。
+
+多个 TMA buffer 的效果可以直接画出来。下图上下两栏是同样的三次 k 迭代，区别只在于 TMA buffer 的数量，红色的部分就是 MMA engine 干等着的时间：
+
+![多个 TMA buffer 带来的重叠](https://raw.githubusercontent.com/tongzhou8086/mmc/e4252f58748502c2e03e25babc2762f4f3e67281/data-flow-models/figures/pipeline-timeline-overlap.png)
+
+另一种 MMA issue stall 是连续的多个 output tile 之间的 stall。在连续的多个 output tile 之间，如果要进行 MMA 操作的话，不光是要 TMA 加载的数据到位，同样也还需要 MMA buffer 能够被写入。如果上一个 output tile 的 MMA 结果正在从 MMA buffer 中被读取出来、正在 draining 的过程中，那下一轮的就无法写入，不然就会覆盖数据。针对这样的 stall，我们也有两种解决方案：一种就是使用多个 MMA buffer，譬如两个；另外一种方案就是加快 draining 的过程，通过把数据先暂存到寄存器中，提前释放 MMA buffer。
+
+除了 Buffer 和操作，数据流模型的第三个要素是信号（signal）。信号的作用很简单：翻转 Buffer 的开关 —— 上面那些 stall，本质上就是在等一个信号把端口翻过来。前面所说的四种 Buffer 都会有两个自己配套的信号，一个代表“打开输入端口、关闭输出端口”，另一个则相反，代表“打开输出开关，关闭输入开关”；从语义上讲，前者代表 “buffer free”，而后者代表 “data ready”。下图代表了一个 TMA buffer 分别接收 data ready 和 buffer free 信号后端口状态的切换。
 
 <img width="500" alt="图片" src="https://github.com/user-attachments/assets/6aae0506-9f98-4b5f-a9c3-cd3b273b3a09" />
 
