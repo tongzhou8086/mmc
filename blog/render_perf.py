@@ -1,12 +1,12 @@
 """Render the performance bar charts for blog/post1.md.
 
-The numbers are parsed out of the post's own tables, so the charts cannot drift
-away from the text around them. Re-run after editing a table:
+The numbers live in blog/perf-data.tsv, which is the single source for them -
+the post embeds the rendered charts rather than a table. Re-run after editing
+the data:
 
     python blog/render_perf.py
 """
 
-import re
 from pathlib import Path
 
 import matplotlib
@@ -14,35 +14,36 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-POST = Path(__file__).with_name("post1.md")
+DATA = Path(__file__).with_name("perf-data.tsv")
 OUTDIR = Path(__file__).with_name("figures")
 
 INK = "#1f2933"
 MUTED = "#6b7684"
 GRID = "#e3e7ec"
+# cuBLAS first, in neutral grey: it is the reference the other two are read
+# against, not a third competitor. The two configurations under discussion keep
+# saturated colours so they stand out from it.
 SERIES = [
+    ("torch.matmul (cuBLAS)", "#b7bfc9"),
     ("BK=64", "#7f9dbb"),
     ("BK=128", "#4f7a52"),
-    ("torch.matmul (cuBLAS)", "#c9a668"),
 ]
+# column index in the parsed rows for each series above
+SERIES_COL = [3, 1, 2]
 
 
-def parse_table(heading):
-    """Pull (shape, bk64, bk128, torch) rows from the table under a heading."""
-    text = POST.read_text()
-    start = text.index(heading)
+def read_rows(design):
+    """(shape, bk64, bk128, torch) rows for one design, from perf-data.tsv."""
     rows = []
-    for line in text[start:].split("\n"):
-        m = re.match(r"\|\s*(\d+)³\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|"
-                     r"\s*[+-][\d.]+%\s*\|\s*([\d.]+)\s*\|", line)
-        if m:
-            rows.append((int(m.group(1)), float(m.group(2)),
-                         float(m.group(3)), float(m.group(4))))
-        elif rows and not line.startswith("|"):
-            break
+    for line in DATA.read_text().split("\n"):
+        if not line or line.startswith("#"):
+            continue
+        name, shape, a, b, t = line.split("\t")
+        if name == design:
+            rows.append((int(shape), float(a), float(b), float(t)))
     if not rows:
-        raise SystemExit(f"no table rows found under {heading!r}")
-    return rows
+        raise SystemExit(f"no rows for {design!r} in {DATA}")
+    return sorted(rows)
 
 
 def bar_chart(all_rows, title, path, note=None):
@@ -55,7 +56,7 @@ def bar_chart(all_rows, title, path, note=None):
     n = len(SERIES)
     width = 0.82 / n
     for i, (label, colour) in enumerate(SERIES):
-        vals = [r[i + 1] for r in rows]
+        vals = [r[SERIES_COL[i]] for r in rows]
         xs = [x + (i - (n - 1) / 2) * width for x in range(len(rows))]
         ax.bar(xs, vals, width=width * 0.94, label=label, color=colour,
                edgecolor="white", linewidth=0.6, zorder=3)
@@ -93,15 +94,15 @@ def bar_chart(all_rows, title, path, note=None):
 
 def main():
     OUTDIR.mkdir(parents=True, exist_ok=True)
-    bn256 = parse_table("| Shape | BK=64（6 个 TMA buffer）")
-    bn512 = parse_table("| Shape | BK=64（4 个 TMA buffer）")
+    bn256 = read_rows("bn256")
+    bn512 = read_rows("bn512")
     small = next(r for r in bn256 if r[0] == 2048)
-    bar_chart(bn256, "BN=256 · BK=64 vs BK=128 vs cuBLAS",
+    bar_chart(bn256, "BN=256 · cuBLAS vs BK=64 vs BK=128",
               OUTDIR / "perf-bn256",
               note=f"2048³ omitted: {small[1]:.0f} / {small[2]:.0f} / "
                    f"{small[3]:.0f} TFLOP/s, far below the rest")
     small = next(r for r in bn512 if r[0] == 2048)
-    bar_chart(bn512, "BN=512 · BK=64 vs BK=128 vs cuBLAS",
+    bar_chart(bn512, "BN=512 · cuBLAS vs BK=64 vs BK=128",
               OUTDIR / "perf-bn512",
               note=f"2048³ omitted: {small[1]:.0f} / {small[2]:.0f} / "
                    f"{small[3]:.0f} TFLOP/s, far below the rest")
