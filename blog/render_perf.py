@@ -50,11 +50,7 @@ def read_rows(heading):
     return sorted(rows)
 
 
-def bar_chart(all_rows, title, path, note=None):
-    # 2048 sits far below everything else; keeping it would flatten the range
-    # the surrounding text is about, and an empty column reads worse than a
-    # sentence. It is called out in the caption instead.
-    rows = [r for r in all_rows if r[0] >= 3072]
+def bar_chart(rows, title, path, note=None):
     shapes = [r[0] for r in rows]
     fig, ax = plt.subplots(figsize=(12.4, 4.9))
     n = len(SERIES)
@@ -98,18 +94,10 @@ def bar_chart(all_rows, title, path, note=None):
 
 def main():
     OUTDIR.mkdir(parents=True, exist_ok=True)
-    bn256 = read_rows("## BN=256")
-    bn512 = read_rows("## BN=512")
-    small = next(r for r in bn256 if r[0] == 2048)
-    bar_chart(bn256, "BN=256 · cuBLAS vs BK=64 vs BK=128",
-              OUTDIR / "perf-bn256",
-              note=f"2048³ omitted: {small[1]:.0f} / {small[2]:.0f} / "
-                   f"{small[3]:.0f} TFLOP/s, far below the rest")
-    small = next(r for r in bn512 if r[0] == 2048)
-    bar_chart(bn512, "BN=512 · cuBLAS vs BK=64 vs BK=128",
-              OUTDIR / "perf-bn512",
-              note=f"2048³ omitted: {small[1]:.0f} / {small[2]:.0f} / "
-                   f"{small[3]:.0f} TFLOP/s, far below the rest")
+    bar_chart(read_rows("## BN=256"), "BN=256 · cuBLAS vs BK=64 vs BK=128",
+              OUTDIR / "perf-bn256")
+    bar_chart(read_rows("## BN=512"), "BN=512 · cuBLAS vs BK=64 vs BK=128",
+              OUTDIR / "perf-bn512")
 
 
 if __name__ == "__main__":
