@@ -35,11 +35,11 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 * tcgen05.ld buffer（位于寄存器，即 RMEM，Register Memory）: 存放从 TMEM 中读取的结果
 * Store buffer（位于 SMEM）: 存放要写入内存的数据
 
-这四种 buffer 是数据流模型里的逻辑概念，它们各自的物理载体如下图所示。可以看到 TMA buffer 和 Store buffer 共享同一块 SMEM、要互相抢容量，MMA buffer 则独占整块 TMEM，而 tcgen05.ld buffer 只是寄存器文件中的一小部分 —— 寄存器的其余部分还要用于地址计算、循环变量、各 warp 的私有状态等等。
+这四种 buffer 是数据流模型里的逻辑概念，它们各自的物理载体如下图所示。可以看到 TMA buffer 和 Store buffer 同属 SMEM 介质、要互相抢容量，MMA buffer 则独占 TMEM 空间，而 tcgen05.ld buffer 只是寄存器文件中的一部分 —— 寄存器的其余部分还要用于地址计算、循环变量、各 warp 的私有状态等等。
 
 ![四种 buffer 的物理载体](https://raw.githubusercontent.com/tongzhou8086/mmc/75ff2242f967e4aa35bdf6a03df52a8b08350093/data-flow-models/figures/sm-storage-map.png)
 
-事实上内存也是一种 buffer，但由于从流水线调度的视角，内存操作并不涉及任何的资源调度策略，所以这里省略。
+事实上内存也是一种 buffer，但由于从流水线调度的视角，内存操作并不涉及任何的资源调度策略，所以这里略去不表。
 
 ### Buffer 的两种状态：可读或可写
 上述的任何一种 buffer 都具有读写互斥性，即同一个 buffer 不能同时被读写，如果生产者的写入和消费者的读取同时进行，则会导致读取错误的数据。于是一个 buffer 总会有两种状态，要么处于“可读”状态，即数据已经就绪，要么处于“可写”状态，即数据已被消费完、可被覆盖。
