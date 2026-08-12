@@ -21,7 +21,7 @@ $$ A.I. = \frac{(2\times BM \times BN \times BK)}{2\times BM \times BK + 2\times
 
 Blackwell 的 MMA 单元是新一代的 TensorCore Engine，和 TMA 单元类似，MMA 单元也是可以独立异步的运作。从软件的角度，只需要单个 Warp 的一个线程发送 MMA 指令，MMA 单元便可以在背后异步地进行 MMA 运算。其实也正是因为 TMA 和 MMA 单元都是异步的，才会使得流水线的设计大放异彩。
 
-TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储介质，它以一种类似于矩阵的方式组织，有 128 行、512 列，每一个 cell 可以存放一个 float 类型，4 个字节，总容量为 256K。TMEM 用来存放 MMA 的中间结果或最终结果，而且根据 Blackwell 的设计，MMA 的结果只能存放在 TMEM 中。
+TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储介质，以一种类似于矩阵的方式组织，有 128 行、512 列，每一个 cell 可以存放一个 float 类型，4 个字节，总容量为 256K。TMEM 用来存放 MMA 的中间结果或最终结果，而且根据 Blackwell 的设计，MMA 的结果只能存放在 TMEM 中。
 
 这些硬件单元都各有自己的设计上的限制，或者是通用性的最佳性能 practice，这也直接影响了我们的流水线设计。具体的限制以及影响，我们在后面具体的流水线设计中再展开。
 
