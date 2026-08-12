@@ -39,25 +39,24 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 <img width="500" alt="图片" src="https://github.com/user-attachments/assets/5972016a-c6d8-47ee-8db2-2b7fac8f3e19" />
 
+事实上内存也是一种 buffer，但由于从流水线调度的视角，内存操操作并不涉及任何的同步需要，所以这里省略。
 
-每一种 buffer 都有一个输出端口和输入端口，类似于一个开关，上图中我们用绿色代表打开，红色代表关闭。上图中所画的则是每一个 buffer 的初始状态：输入端口打开，表示数据可以写入；输出端口关闭，表示数据尚未 ready 被 consume。
+### Buffer 的两种状态：可读或可写
+上述的任何一种 buffer 都具有读写互斥性，即同一个 buffer 不能同时被读写，如果生产者的写入和消费者的读取同时进行，则会导致读取错误的数据。于是一个 buffer 总会有两种状态，要么处于“可读”状态，即数据已经就绪，要么处于“可写”状态，即数据已被消费完、可被覆盖。
 
-Buffer 和 Buffer 之间的数据流动通过“操作”完成，我们定义如下三种操作：
+### 针对 Buffer 的 5 种操作
+任何的流水线设计，都会涉及到下述 5 种操作，每一种操作会从一个源 Buffer 读取数据，并将操作后的结果写入目的 Buffer —— 从数据流的角度，可以视为数据从源 Buffer 流入了目的 Buffer。
 
-* TMA load: 数据从内存流入 TMA buffer
-* MMA: 数据从 TMA buffer 流入 MMA buffer
-* tcgen05.ld: 数据从 MMA buffer 流入 tcgen05.ld buffer
-* stage: 数据从 tcgen05.ld buffer 流入 Store buffer
-* TMA store: 数据从 Store buffer 流入内存
+这 5 种操作分别是：
 
-可以看到，在上图中我们并没有把内存画出来，但是实际上数据会先从内存流入 TMA buffer，最后也会从 Store buffer 流入到内存。所以实际内存也是数据流模型的一部分。但是由于内存不涉及任何的同步以及调度，所以为了简化被省略了。如果要把内存作为一个 Buffer 画出来的话，那它的输入和输出端口将总是绿的，即，你总是可以往里面写或者从里面读。
+* TMA load: 从内存读取数据，写入 TMA buffer
+* MMA: 从 TMA buffer 读取数据，结果写入 MMA buffer
+* tcgen05.ld: 
+* stage: 
+* TMA store: 
 
-除内存以外的其他 buffer 都存在一个性质，即，输入和输出端口不可能同时开放（为绿色）、也不可能同时都关闭（为红色）。当我们往 Buffer 里面写数据的时候，需要保持输入打开，但是输出端口需要关闭，因为数据还没有 Ready；类似的，当我们从 buffer 里面读取数据时，需要保持输出端口打开，这时输入端口则需要关闭，不然就会覆盖原有数据。此外，如果两个端口都关闭，则数据进不去也出不来。
-
-现在我们再来看如何对“操作”建模。一个操作本质上就是连接两个 buffer 之间的一条管道，而一个操作要能够开始，需要同时满足：1）源 buffer 的 output 端口开启；2）目的 buffer 的 input 端口开启，即，既要源 buffer 可读，也要目的 buffer 可写。以 MMA 操作为例，它的图形化表示如下。
-
-<img width="500" alt="图片" src="https://github.com/user-attachments/assets/1f7b980d-88cb-45de-bed7-0198a390f63a" />
-
+### 单个 output tile 的时序图
+对于一个 
 
 到这里，buffer、端口、操作、以及一个操作能够开始的条件都定义完了。但还缺一样东西：端到端地看，数据究竟是怎么一步步从一个 buffer 走到下一个 buffer 的。把这五个操作按时间画出来，就是下面这个样子。时间从左往右走，每个操作都从上一个操作结束的地方开始，中间的窄条表示此刻数据待在哪个 buffer 里，颜色则标出它所处的存储层级：
 
