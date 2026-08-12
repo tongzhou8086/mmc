@@ -89,9 +89,6 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 另一种 MMA issue stall 是连续的多个 output tile 之间的 stall。在连续的多个 output tile 之间，如果要进行 MMA 操作的话，不光是要 TMA 加载的数据到位，同样也还需要 MMA buffer 能够被写入。如果上一个 output tile 的 MMA 结果正在从 MMA buffer 中被读取出来、正在 draining 的过程中，那下一轮的就无法写入，不然就会覆盖数据。针对这样的 stall，我们也有两种解决方案：一种就是使用多个 MMA buffer，譬如两个；另外一种方案就是加快 draining 的过程，通过把数据先暂存到寄存器中，提前释放 MMA buffer。
 
-除了 Buffer 和操作，数据流模型的第三个要素是信号（signal）。信号的作用很简单：翻转 Buffer 的开关 —— 上面那些 stall，本质上就是在等一个信号把端口翻过来。前面所说的四种 Buffer 都会有两个自己配套的信号，一个代表“打开输入端口、关闭输出端口”，另一个则相反，代表“打开输出开关，关闭输入开关”；从语义上讲，前者代表 “buffer free”，而后者代表 “data ready”。下图代表了一个 TMA buffer 分别接收 data ready 和 buffer free 信号后端口状态的切换。
-
-<img width="500" alt="图片" src="https://github.com/user-attachments/assets/6aae0506-9f98-4b5f-a9c3-cd3b273b3a09" />
 
 
 ## Warp Specialization
