@@ -1,12 +1,13 @@
 """Render the performance bar charts for blog/post1.md.
 
-The numbers live in blog/perf-data.tsv, which is the single source for them -
-the post embeds the rendered charts rather than a table. Re-run after editing
-the data:
+The numbers live in blog/perf-data.md, as the markdown tables they came from -
+the post embeds the rendered charts, and that file keeps the exact figures. Re-run
+after editing a table there:
 
     python blog/render_perf.py
 """
 
+import re
 from pathlib import Path
 
 import matplotlib
@@ -14,7 +15,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 
-DATA = Path(__file__).with_name("perf-data.tsv")
+DATA = Path(__file__).with_name("perf-data.md")
 OUTDIR = Path(__file__).with_name("figures")
 
 INK = "#1f2933"
@@ -32,17 +33,20 @@ SERIES = [
 SERIES_COL = [3, 1, 2]
 
 
-def read_rows(design):
-    """(shape, bk64, bk128, torch) rows for one design, from perf-data.tsv."""
+def read_rows(heading):
+    """(shape, bk64, bk128, torch) rows from the table under a heading."""
+    text = DATA.read_text()
     rows = []
-    for line in DATA.read_text().split("\n"):
-        if not line or line.startswith("#"):
-            continue
-        name, shape, a, b, t = line.split("\t")
-        if name == design:
-            rows.append((int(shape), float(a), float(b), float(t)))
+    for line in text[text.index(heading):].split("\n"):
+        m = re.match(r"\|\s*(\d+)³\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|"
+                     r"\s*[+-][\d.]+%\s*\|\s*([\d.]+)\s*\|", line)
+        if m:
+            rows.append((int(m.group(1)), float(m.group(2)),
+                         float(m.group(3)), float(m.group(4))))
+        elif rows and not line.startswith("|"):
+            break
     if not rows:
-        raise SystemExit(f"no rows for {design!r} in {DATA}")
+        raise SystemExit(f"no table rows found under {heading!r} in {DATA}")
     return sorted(rows)
 
 
@@ -94,8 +98,8 @@ def bar_chart(all_rows, title, path, note=None):
 
 def main():
     OUTDIR.mkdir(parents=True, exist_ok=True)
-    bn256 = read_rows("bn256")
-    bn512 = read_rows("bn512")
+    bn256 = read_rows("## BN=256")
+    bn512 = read_rows("## BN=512")
     small = next(r for r in bn256 if r[0] == 2048)
     bar_chart(bn256, "BN=256 · cuBLAS vs BK=64 vs BK=128",
               OUTDIR / "perf-bn256",
