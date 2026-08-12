@@ -1104,7 +1104,7 @@ def operations_chain():
     Memory bookends the chain in dashed boxes: data comes from it and goes back
     to it, but the model does not synchronize on it.
     """
-    fig, ax = plt.subplots(figsize=(12.2, 5.6))
+    fig, ax = plt.subplots(figsize=(11.6, 4.6))
 
     chain = [("Memory", "HBM"), ("TMA buffer", "SMEM"), ("MMA buffer", "TMEM"),
              ("tcgen05.ld buffer", "RMEM"), ("Store buffer", "SMEM"),
@@ -1165,14 +1165,8 @@ def operations_chain():
     ax.text(0.55, 5.38,
             "each one reads from one buffer and writes to the next",
             ha="left", va="center", fontsize=10.5, color=MUTED)
-    ax.text(0.55, 0.42,
-            "Memory bookends the chain in dashed boxes: data comes from it and "
-            "goes back to it, but the model does not synchronize on it. Every "
-            "other box is a buffer the schedule has to manage.",
-            ha="left", va="center", fontsize=9, color=INK)
-
-    ax.set_xlim(0.0, 15.6)
-    ax.set_ylim(0.05, 6.05)
+    ax.set_xlim(0.20, 13.25)
+    ax.set_ylim(0.95, 6.05)
     ax.set_aspect("equal")
     ax.axis("off")
     fig.tight_layout()

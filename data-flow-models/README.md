@@ -75,7 +75,8 @@ which buffer each operation connects to which.
 
 Memory bookends the chain in dashed boxes: data comes from it and goes back to
 it, but the model does not synchronize on it, so it is not a buffer the schedule
-has to manage.
+has to manage. (That is left to this note rather than captioned on the figure,
+which carries no body text.)
 
 ![The five operations](figures/operations-chain.png)
 
