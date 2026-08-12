@@ -62,6 +62,23 @@ flips when.
 
 ## Figures
 
+### `operations-chain`
+
+All five operations in one picture: each arrow is an operation, and the boxes on
+either side are the buffer it reads from and the buffer it writes to. Wrapped
+into two rows, because one row of six boxes with readable labels between them
+comes out six times wider than it is tall.
+
+This is deliberately *not* a timeline — `pipeline-timeline` lays the same five
+operations out in time. Here the time axis is dropped entirely, leaving only
+which buffer each operation connects to which.
+
+Memory bookends the chain in dashed boxes: data comes from it and goes back to
+it, but the model does not synchronize on it, so it is not a buffer the schedule
+has to manage.
+
+![The five operations](figures/operations-chain.png)
+
 ### `pipeline-timeline`
 
 The five operations of one output tile, as a staircase in time. Time runs left to

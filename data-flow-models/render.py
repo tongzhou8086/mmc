@@ -1051,7 +1051,7 @@ def pipeline_timeline():
             "and one output tile; in a real pipeline these steps overlap "
             "across tiles, so this is an order, not a timeline to scale.",
             ha="left", va="center", fontsize=9, color=INK, linespacing=1.5)
-    ax.set_xlim(0.0, 18.4)
+    ax.set_xlim(0.0, 26.5)
     ax.set_ylim(base - 1.35, 7.65)
     ax.set_aspect("equal")
     ax.axis("off")
@@ -1090,7 +1090,97 @@ def pipeline_timeline_stall():
     return fig
 
 
+def operations_chain():
+    """All five operations at once: source buffer, operation, destination.
+
+    A chain rather than a timeline. pipeline-timeline lays the same five
+    operations out in time; this one drops the time axis and just says which
+    buffer each operation reads from and writes to, which is what the
+    operations list in the post needs.
+
+    Wrapped into two rows, because one row of six boxes with readable labels
+    between them comes out six times wider than it is tall.
+
+    Memory bookends the chain in dashed boxes: data comes from it and goes back
+    to it, but the model does not synchronize on it.
+    """
+    fig, ax = plt.subplots(figsize=(12.2, 5.6))
+
+    chain = [("Memory", "HBM"), ("TMA buffer", "SMEM"), ("MMA buffer", "TMEM"),
+             ("tcgen05.ld buffer", "RMEM"), ("Store buffer", "SMEM"),
+             ("Memory", "HBM")]
+    ops = [("TMA load", "A / B tiles in"),
+           ("MMA", "multiply-accumulate"),
+           ("tcgen05.ld", "accumulator out"),
+           ("stage", "repack for coalescing"),
+           ("TMA store", "result back")]
+
+    BW, BH, GAP, ROW = 2.55, 1.15, 2.35, 2.45
+    top, bot = 4.20, 4.20 - ROW
+    pos = [(0.55 + i * (BW + GAP), top) for i in range(3)]
+    # second row runs right to left, so the chain snakes rather than jumping back
+    pos += [(0.55 + (2 - i) * (BW + GAP), bot) for i in range(3)]
+
+    for (name, level), (x, y) in zip(chain, pos):
+        ax.add_patch(FancyBboxPatch(
+            (x, y - BH / 2), BW, BH,
+            boxstyle="round,pad=0.02,rounding_size=0.10", linewidth=1.7,
+            edgecolor=LEVEL_EDGE[level], facecolor=LEVEL_FACE[level],
+            linestyle=(0, (4, 2.5)) if name == "Memory" else "solid", zorder=2))
+        ax.text(x + BW / 2, y + 0.16, name, ha="center", va="center",
+                fontsize=10.5, fontweight="bold", color=INK, zorder=4)
+        ax.text(x + BW / 2, y - 0.20, level, ha="center", va="center",
+                fontsize=9, color=MUTED, zorder=4)
+
+    def label(mx, my, op, note, above=True):
+        # op above the note in both cases; only the block's side of the arrow
+        # flips, otherwise the two lines land on top of each other
+        op_y = my + 0.52 if above else my - 0.42
+        ax.text(mx, op_y, op, ha="center", va="center", fontsize=10.5,
+                fontweight="bold", color=INK, zorder=4)
+        ax.text(mx, op_y - 0.30, note, ha="center", va="center", fontsize=8,
+                color=MUTED, zorder=4)
+
+    for i, (op, note) in enumerate(ops):
+        (x0, y0), (x1, y1) = pos[i], pos[i + 1]
+        if y0 == y1 and x1 > x0:            # left to right, top row
+            a, b = (x0 + BW + 0.05, y0), (x1 - 0.05, y1)
+            label((a[0] + b[0]) / 2, y0, op, note)
+        elif y0 == y1:                       # right to left, bottom row
+            a, b = (x0 - 0.05, y0), (x1 + BW + 0.05, y1)
+            label((a[0] + b[0]) / 2, y0, op, note, above=False)
+        else:                                # the wrap, straight down
+            a, b = (x0 + BW / 2, y0 - BH / 2 - 0.05), (x1 + BW / 2, y1 + BH / 2 + 0.05)
+            ax.text(x0 + BW / 2 + 0.28, (y0 + y1) / 2 + 0.13, op, ha="left",
+                    va="center", fontsize=10.5, fontweight="bold", color=INK,
+                    zorder=4)
+            ax.text(x0 + BW / 2 + 0.28, (y0 + y1) / 2 - 0.15, note, ha="left",
+                    va="center", fontsize=8, color=MUTED, zorder=4)
+        ax.add_patch(FancyArrowPatch(
+            a, b, arrowstyle="-|>", mutation_scale=17, linewidth=2.0,
+            color=INK, shrinkA=0, shrinkB=0, zorder=3))
+
+    ax.text(0.55, 5.72, "The five operations", ha="left", va="center",
+            fontsize=15, fontweight="bold", color=INK)
+    ax.text(0.55, 5.38,
+            "each one reads from one buffer and writes to the next",
+            ha="left", va="center", fontsize=10.5, color=MUTED)
+    ax.text(0.55, 0.42,
+            "Memory bookends the chain in dashed boxes: data comes from it and "
+            "goes back to it, but the model does not synchronize on it. Every "
+            "other box is a buffer the schedule has to manage.",
+            ha="left", va="center", fontsize=9, color=INK)
+
+    ax.set_xlim(0.0, 15.6)
+    ax.set_ylim(0.05, 6.05)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
 FIGURES = {
+    "operations-chain": operations_chain,
     "pipeline-timeline": pipeline_timeline,
     "pipeline-timeline-stall": pipeline_timeline_stall,
     "buffer-kinds": buffer_kinds,
