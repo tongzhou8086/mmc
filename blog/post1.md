@@ -192,7 +192,7 @@ for tile in my_output_tiles:
 
 
 
-![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/6f9216a2f987ab54e834c3ed46d19a347e53c4e6/blog/figures/perf-bn256.png)
+![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/cdef6567a5bf46f41a67f91a73c44f5c349b1ec0/blog/figures/perf-bn256.png)
 
 完整数字见 [blog/perf-data.md](./perf-data.md)。
 
@@ -278,7 +278,7 @@ BN512 的上述设计也可以有两种选配，BK=64 和 BK=128，如果 BK 等
 
 这里我们测两种选配：BK=64 和 BK=128。测量方法与上面相同。
 
-![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/6f9216a2f987ab54e834c3ed46d19a347e53c4e6/blog/figures/perf-bn512.png)
+![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/cdef6567a5bf46f41a67f91a73c44f5c349b1ec0/blog/figures/perf-bn512.png)
 
 
 ## 工具
