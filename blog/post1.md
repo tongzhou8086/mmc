@@ -71,10 +71,6 @@ Buffer 和 Buffer 之间的数据流动通过“操作”完成，我们定义�
 
 这里实际上有两种不同的 MMA issue stall。一种是一个 output tile 内部多次 K 迭代之间的，这种 stall 我们可以使用多个 TMA buffer 来减少 —— 也就是说，在一次 MMA 操作进行的时候，TMA load 同时也在往另外一个 buffer 里面写入数据，这样等当前的 MMA 操作完成之后，它可以立即从另外一个 buffer 里面继续取数据进行 MMA 操作，而无需等待同一个 buffer。
 
-多个 TMA buffer 的效果可以直接画出来。下图上下两栏是同样的三次 k 迭代，区别只在于 TMA buffer 的数量，红色的部分就是 MMA engine 干等着的时间：
-
-![多个 TMA buffer 带来的重叠](https://raw.githubusercontent.com/tongzhou8086/mmc/e4252f58748502c2e03e25babc2762f4f3e67281/data-flow-models/figures/pipeline-timeline-overlap.png)
-
 另一种 MMA issue stall 是连续的多个 output tile 之间的 stall。在连续的多个 output tile 之间，如果要进行 MMA 操作的话，不光是要 TMA 加载的数据到位，同样也还需要 MMA buffer 能够被写入。如果上一个 output tile 的 MMA 结果正在从 MMA buffer 中被读取出来、正在 draining 的过程中，那下一轮的就无法写入，不然就会覆盖数据。针对这样的 stall，我们也有两种解决方案：一种就是使用多个 MMA buffer，譬如两个；另外一种方案就是加快 draining 的过程，通过把数据先暂存到寄存器中，提前释放 MMA buffer。
 
 除了 Buffer 和操作，数据流模型的第三个要素是信号（signal）。信号的作用很简单：翻转 Buffer 的开关 —— 上面那些 stall，本质上就是在等一个信号把端口翻过来。前面所说的四种 Buffer 都会有两个自己配套的信号，一个代表“打开输入端口、关闭输出端口”，另一个则相反，代表“打开输出开关，关闭输入开关”；从语义上讲，前者代表 “buffer free”，而后者代表 “data ready”。下图代表了一个 TMA buffer 分别接收 data ready 和 buffer free 信号后端口状态的切换。
