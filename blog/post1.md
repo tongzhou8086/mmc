@@ -53,20 +53,27 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 * stage: 从 tcgen05.ld 读取数据，写入 stage buffer
 * TMA store: 从 stage buffer 读取数据，写入内存
 
-第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果，必须保存在 TMEM 中，如果所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取出来、读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 tcgen05.ld，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld读取到寄存器中的数据是按列分布到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的分布方式使得如果你直接将寄存器结果写入内存，就会导致 uncoalesced memory access。
+第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果，必须保存在 TMEM 中，如果所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取出来、读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 tcgen05.ld，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld 读取到寄存器中的数据是按列分布到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的 layout 方式使得，如果你直接将寄存器结果写入内存就会导致 uncoalesced memory access。于是在我们所有的设计中，都会将 tcgen05.ld 的结果先写入一个 SMEM 缓冲区，在缓冲区进行重组，每行能够凑满 128 个连续字节了再进行内存写入，这也便是最后的两步。
+
+### 一个操作能开始的两个条件
+划重点来了！！上述的任何一个操作要能够开始，但必须同时满足以下两个条件：
+* 源 Buffer 可读
+* 目的 Buffer 可写
+这是整个流水线调度设计正确性保障的根本原理。
 
 ### 单个 output tile 的时序图
-对于一个 
-
-到这里，buffer、端口、操作、以及一个操作能够开始的条件都定义完了。但还缺一样东西：端到端地看，数据究竟是怎么一步步从一个 buffer 走到下一个 buffer 的。把这五个操作按时间画出来，就是下面这个样子。时间从左往右走，每个操作都从上一个操作结束的地方开始，中间的窄条表示此刻数据待在哪个 buffer 里，颜色则标出它所处的存储层级：
+对于单个的 output tile，如果我们假设它的 k 层循环迭代只有一次，即 K = BK，那上述 5 种操作的时序图便会长下面这个样子：
 
 ![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline.png)
 
-注意这张图只画出了上面那条规则的一半 —— 源 buffer 的输出端口开着。另一半，即目的 buffer 的输入端口也得开着，图上是看不出来的。把它违反掉，就会出现下面这种情况：
+一个箭头的起点表示操作的开始，终点则表示操作完成，所以箭头的终点也会代表对应 buffer 的状态。譬如，TMA load 箭头的终点则表示对应的 TMA buffer 状态变为“可读”，即 TMA load 操作已完成；与此同时，一种操作的结束也代表其源 buffer 的状态变为“可写”。譬如 MMA 箭头的终点代表一次 BK tile 的 MMA 操作完成，假设 K=BK，这时便会有两个Buffer 的状态都会改变：目的 Buffer 状态变为“可读”，以及源 Buffer 状态变为“可写” —— 数据既然已被消费完毕，那源 Buffer 当然就可以重新写入新的数据喽。
+
+另外，这张图上看不到的部分还包括，它只画出了一个操作能开始的条件之一，即源 Buffer 可读，另一个条件，即目的 Buffer 可写，图上是看不出来的。举个例子，假如一次 MMA 操作进行之前，哪怕对应的 TMA load 操作已经完成，若是其将要写入的 MMA buffer 目前状态并不可写，那 MMA 操作也无法被 issue。我们用下面这张图来表示这种情况：
 
 ![同一个 tile，出现了 stall](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline-stall.png)
 
-流水线调度设计的根本主旨是减少 MMA issue 的 stall。从第二个图中我们可以看出来，如果 MMA buffer 还没有 ready 的话，哪怕 TMA 加载的数据到位了，MMA 操作也依然无法 issue。
+### 减少 MMA issue 的 stall
+流水线调度设计的根本主旨是减少 MMA issue 的 stall。
 
 这里实际上有两种不同的 MMA issue stall。一种是一个 output tile 内部多次 K 迭代之间的，这种 stall 我们可以使用多个 TMA buffer 来减少 —— 也就是说，在一次 MMA 操作进行的时候，TMA load 同时也在往另外一个 buffer 里面写入数据，这样等当前的 MMA 操作完成之后，它可以立即从另外一个 buffer 里面继续取数据进行 MMA 操作，而无需等待同一个 buffer。
 
@@ -75,7 +82,6 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 除了 Buffer 和操作，数据流模型的第三个要素是信号（signal）。信号的作用很简单：翻转 Buffer 的开关 —— 上面那些 stall，本质上就是在等一个信号把端口翻过来。前面所说的四种 Buffer 都会有两个自己配套的信号，一个代表“打开输入端口、关闭输出端口”，另一个则相反，代表“打开输出开关，关闭输入开关”；从语义上讲，前者代表 “buffer free”，而后者代表 “data ready”。下图代表了一个 TMA buffer 分别接收 data ready 和 buffer free 信号后端口状态的切换。
 
 <img width="500" alt="图片" src="https://github.com/user-attachments/assets/6aae0506-9f98-4b5f-a9c3-cd3b273b3a09" />
-
 
 
 ## Warp Specialization
