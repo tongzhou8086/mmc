@@ -35,14 +35,12 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 * tcgen05.ld buffer（位于寄存器，即 RMEM，Register Memory）: 存放从 TMEM 中读取的结果
 * Store buffer（位于 SMEM）: 存放要写入内存的数据
 
-用图形化的表示方式如下。
-
-<img width="500" alt="图片" src="https://github.com/user-attachments/assets/5972016a-c6d8-47ee-8db2-2b7fac8f3e19" />
-
 事实上内存也是一种 buffer，但由于从流水线调度的视角，内存操作并不涉及任何的资源调度策略，所以这里省略。
 
 ### Buffer 的两种状态：可读或可写
 上述的任何一种 buffer 都具有读写互斥性，即同一个 buffer 不能同时被读写，如果生产者的写入和消费者的读取同时进行，则会导致读取错误的数据。于是一个 buffer 总会有两种状态，要么处于“可读”状态，即数据已经就绪，要么处于“可写”状态，即数据已被消费完、可被覆盖。
+
+这种互斥性建立了我们后续要探讨的同步机制的根基。
 
 ### 针对 Buffer 的 5 种操作
 任何的流水线设计，都会涉及到下述 5 种操作，每一种操作会从一个源 Buffer 读取数据，并将操作后的结果写入目的 Buffer —— 从数据流的角度，可以视为数据从源 Buffer 流入了目的 Buffer。
@@ -51,9 +49,11 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 * TMA load: 从内存读取数据，写入 TMA buffer
 * MMA: 从 TMA buffer 读取数据，结果写入 MMA buffer
-* tcgen05.ld: 
-* stage: 
-* TMA store: 
+* tcgen05.ld: 从 MMA buffer 读取数据，写入 tcgen05.ld buffer
+* stage: 从 tcgen05.ld 读取数据，写入 stage buffer
+* TMA store: 从 stage buffer 读取数据，写入内存
+
+第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果，必须保存在 TMEM 中，如果所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取出来、读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 tcgen05.ld，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld读取到寄存器中的数据是按列分布到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的分布方式使得如果你直接将寄存器结果写入内存，就会导致 uncoalesced memory access。
 
 ### 单个 output tile 的时序图
 对于一个 
