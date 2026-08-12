@@ -192,7 +192,7 @@ for tile in my_output_tiles:
 
 
 
-![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/c548b38e978029ff01b16d924dccb0519e0fbad1/blog/figures/perf-bn256.png)
+![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/28c1c0053b1cfbb6a0f3be36c0a635b32854e96e/blog/figures/perf-bn256.png)
 
 在 12288 以下，两种 BK 的差距都在 2% 以内，互有胜负 —— BK 加倍以后 TMA buffer 从 6 个掉到 3 个，run-ahead 变浅，恰好抵消掉更少更大的内存读取带来的好处。但从 14336 开始，BK=128 就明显占优了，在 16384 上快出 **12.6%**。值得注意的是真正在动的是 BK=64：它从 6144 上的 1360 一路掉到 18432 上的 1113，而 BK=128 在 1240 到 1300 之间基本持平。也就是说 BK=128 的优势不在于它自己变快，而在于它在大尺寸上不像 BK=64 那样掉下去。
 
@@ -276,7 +276,7 @@ BN512 的上述设计也可以有两种选配，BK=64 和 BK=128，如果 BK 等
 
 这里我们测两种选配：BK=64 和 BK=128。测量方法与上面相同。
 
-![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/c548b38e978029ff01b16d924dccb0519e0fbad1/blog/figures/perf-bn512.png)
+![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/28c1c0053b1cfbb6a0f3be36c0a635b32854e96e/blog/figures/perf-bn512.png)
 
 
 ## 工具
