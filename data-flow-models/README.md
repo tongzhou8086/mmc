@@ -62,6 +62,19 @@ flips when.
 
 ## Figures
 
+### `sm-storage-map`
+
+Which physical storage backs each of the four buffer kinds: one SM box holding
+SMEM, TMEM and RMEM, each carved into the buffers it backs.
+
+The point is that *buffer* is a logical notion in the data-flow model, and this
+is where each kind actually lives. Two of the four share SMEM and compete for
+the same allocation; the MMA buffer has TMEM to itself; and the `tcgen05.ld`
+buffer is a slice of a much larger register file rather than a region reserved
+for it, which is why the rest of RMEM is drawn dashed.
+
+![What backs each buffer](figures/sm-storage-map.png)
+
 ### `pipeline-timeline`
 
 The five operations of one output tile, as a staircase in time. Time runs left to

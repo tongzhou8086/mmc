@@ -1090,7 +1090,88 @@ def pipeline_timeline_stall():
     return fig
 
 
+def sm_storage_map():
+    """Which physical storage backs each of the four buffer kinds.
+
+    One SM box holding SMEM, TMEM and RMEM, each carved into the buffers it
+    backs. The point is that "buffer" is a logical notion in the data-flow
+    model, and this is where each kind actually lives: two of the four share
+    SMEM, and the register buffer is a slice of a much larger register file
+    rather than a region reserved for it.
+    """
+    fig, ax = plt.subplots(figsize=(11.4, 6.4))
+
+    SM_X, SM_Y, SM_W, SM_H = 0.55, 0.55, 10.3, 4.85
+    ax.add_patch(FancyBboxPatch(
+        (SM_X, SM_Y), SM_W, SM_H,
+        boxstyle="round,pad=0.04,rounding_size=0.16",
+        linewidth=2.0, edgecolor="#5b6875", facecolor="#fbfcfd", zorder=1))
+    ax.text(SM_X + 0.28, SM_Y + SM_H - 0.34, "One SM", ha="left", va="center",
+            fontsize=13, fontweight="bold", color=INK, zorder=4)
+
+    def store_box(x, y, w, h, name, cap, level):
+        ax.add_patch(FancyBboxPatch(
+            (x, y), w, h, boxstyle="round,pad=0.02,rounding_size=0.10",
+            linewidth=1.6, edgecolor=LEVEL_EDGE[level],
+            facecolor=LEVEL_FACE[level], zorder=2))
+        ax.text(x + 0.20, y + h - 0.30, name, ha="left", va="center",
+                fontsize=11, fontweight="bold", color=INK, zorder=4)
+        ax.text(x + w - 0.20, y + h - 0.30, cap, ha="right", va="center",
+                fontsize=9, color=MUTED, zorder=4)
+
+    def slot(x, y, w, h, label, sub=None, dashed=False):
+        ax.add_patch(FancyBboxPatch(
+            (x, y), w, h, boxstyle="round,pad=0.01,rounding_size=0.07",
+            linewidth=1.4, edgecolor="#5b6875" if not dashed else "#9aa5b1",
+            facecolor="white", linestyle=(0, (3, 2)) if dashed else "solid",
+            zorder=3))
+        ax.text(x + w / 2, y + h / 2 + (0.13 if sub else 0), label,
+                ha="center", va="center", fontsize=10,
+                fontweight="bold" if not dashed else "normal",
+                color=INK if not dashed else MUTED, zorder=4)
+        if sub:
+            ax.text(x + w / 2, y + h / 2 - 0.19, sub, ha="center", va="center",
+                    fontsize=8.5, color=MUTED, zorder=4)
+
+    # SMEM: two of the four buffer kinds live here
+    sx, sy, sw, sh = 0.95, 2.55, 6.35, 2.15
+    store_box(sx, sy, sw, sh, "SMEM", "227 KB", "SMEM")
+    slot(sx + 0.25, sy + 0.28, 3.85, 1.20, "TMA buffer", "A tile + B tile · several of them")
+    slot(sx + 4.35, sy + 0.28, 1.75, 1.20, "Store buffer", "several of them")
+
+    # TMEM: entirely the MMA buffer
+    tx, ty, tw, th = 0.95, 0.95, 6.35, 1.35
+    store_box(tx, ty, tw, th, "TMEM", "128 x 512 · 256 KB", "TMEM")
+    slot(tx + 0.25, ty + 0.22, sw - 0.50, 0.62, "MMA buffer",
+         None)
+
+    # RMEM: the ld buffer is a slice of the register file
+    rx, ry, rw, rh = 7.55, 0.95, 3.05, 3.75
+    store_box(rx, ry, rw, rh, "RMEM", "256 KB", "RMEM")
+    slot(rx + 0.25, ry + 0.30, rw - 0.50, 0.95, "tcgen05.ld buffer")
+    slot(rx + 0.25, ry + 1.45, rw - 0.50, 1.55, "everything else",
+         "addressing, loop state,\nper-warp private data", dashed=True)
+
+    ax.text(0.55, 5.95, "What backs each buffer", ha="left", va="center",
+            fontsize=15, fontweight="bold", color=INK)
+    ax.text(0.55, 5.62,
+            "buffer is a logical notion in the model — this is where each kind physically lives",
+            ha="left", va="center", fontsize=10.5, color=MUTED)
+    ax.text(0.55, 0.15,
+            "TMA buffers and store buffers share one SMEM allocation and compete for it; "
+            "the MMA buffer has TMEM to itself.",
+            ha="left", va="center", fontsize=9, color=INK)
+
+    ax.set_xlim(0.0, 11.4)
+    ax.set_ylim(-0.15, 6.25)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.tight_layout()
+    return fig
+
+
 FIGURES = {
+    "sm-storage-map": sm_storage_map,
     "pipeline-timeline": pipeline_timeline,
     "pipeline-timeline-stall": pipeline_timeline_stall,
     "buffer-kinds": buffer_kinds,
