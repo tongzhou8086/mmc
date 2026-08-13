@@ -105,7 +105,7 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 但是后面的 tcgen05.ld 和 stage 操作就不太一样了，这两操作要对数据进行批量操作，需要使用 SIMT 模型进行编程，于是我们要配多个 warps 来提高并行度 —— 4 个 warps 是 GPU 编程的一个标配，有时候我们也会配 8 个 warps 来提高能使用的寄存器数量。另外最后的 TMA Store 操作本质上也只需要配一个线程，我们可以给它单独配一个 Warp。但是经验上我们发现，就让 Epilogue Warps 顺便完成 TMA Store，也挺高效的。因为 TMA Store 是一个比较简单的操作，只需要发射一条 TMA store 指令，加上一点简单的地址计算。
  
 
-## 流水线设计的参数配置
+## 流水线设计的参数配置与原语
 流水线设计的表达是一个程序，它表达的是数据在前文所说的这些 buffer 之间流动的时候的同步规则以及时序设计，与此同时，它也涉及到一些基础的参数配置，这些参数就是流水线这个程序的常量。任何的一种调度方式，至少需要配置如下参数：
 
 * Tile sizes: BM/BN/BK
@@ -121,11 +121,10 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 * A tile: BM x BK x 2
 * B tile: BK x BN x 2 / 2
 
-B tile 之所以后面会除以 2，就是因为 2 CTA MMA 的开启。下面我们看本文的第一种流水线设计。对于每种设计，我们首先看参数如何配，参数确定好以后，再看同步如何进行。
+B tile 之所以后面会除以 2，是因为我们默认了 2 CTA MMA 的开启。
 
 
-## 流水线设计的原语（Primitives）
-除了参数配置，流水线设计还包括一套基本操作。不同的调度方案虽然在 tile sizes、buffer 数量、
+除了参数配置，流水线设计定义了一套基本操作。不同的调度方案虽然在 tile sizes、buffer 数量、
 同步时机上各不相同，但都可以用同一套原语来表达，即一套流水线调度的基本对象，及其对应的
 操作与信号；完整定义详见 [docs/pipeline-primitives.md](../docs/pipeline-primitives.md)。
 后文的伪代码都基于这套原语书写。
@@ -205,9 +204,10 @@ for tile in my_output_tiles:
 
 ### 性能数字
 
-下面我们看一下这个设计在方阵上的性能是多少，事实上我们考虑两种不同的选配，BK=64 和 BK=128，上述的讨论中，假定的 BK 等于 64，BK 等于 128 的情况很简单，就是把 TMA buffer 的数量砍半就可以，其他原理不变。以下性能数字的测量方法使用 triton.do_bench 获得 median runtime，warmup 和 repetition time 都设置为 1 秒；每个尺寸跑三轮独立的测量，每轮内部再做三次打乱顺序的采样，最后取中位数 —— 打乱顺序是为了避免先后次序带来的偏差，跑三轮则是因为单轮的结果在大尺寸上并不稳定。
+下面我们看一下这个设计在方阵上的性能是多少，事实上我们考虑两种不同的 BK 选配：64/128，以及三种不同的 GROUP_SIZE_M （简称 GSM）选配:8/12/16。不同的 GSM 选配仅仅需要改一个常数参数，而 BK=64/128 的区别也仅仅在于把 TMA buffer 的数量砍半，逻辑部分完全一致。
+以下性能数字的测量方法使用 triton.do_bench 获得 median runtime，warmup 和 repetition time 都设置为 1 秒；每个尺寸跑三轮独立的测量，每轮内部再做三次打乱顺序的采样，最后取中位数 —— 打乱顺序是为了避免先后次序带来的偏差，跑三轮则是因为单轮的结果在大尺寸上并不稳定。
 
-
+<Update the chart to draw 7 bars per shape>
 ![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/3cce074ebf2e6ef3af347135ed9e3d561cd53170/blog/figures/perf-bn256.png)
 
 
@@ -292,10 +292,9 @@ for tile in my_output_tiles:
 
 ### 性能数字
 
-BN512 的上述设计也可以有两种选配，BK=64 和 BK=128，如果 BK 等于 128 的话，则只有两个 TMA buffer。
+BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果 BK=64 和 128 分别使用 4 个和 2 个 TMA buffer。性能测量方法与上面相同。
 
-这里我们测两种选配：BK=64 和 BK=128。测量方法与上面相同。
-
+<Update the chart to draw 7 bars per shape>
 ![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/3cce074ebf2e6ef3af347135ed9e3d561cd53170/blog/figures/perf-bn512.png)
 
 可以看到，对于稍大一些的方阵，相比 BN256，BN512 的确能达到更高的性能。一个可能的解释是，对于比较大的方阵，它们的 K 维度会比较大，所以 Epilogue 所占时间的比例相比整个计算时间会缩小。BN512 能够使计算部分更快，但是在 Epilogue 会有卡顿，便适用于这种 K 维度比较大的情况。
@@ -305,12 +304,14 @@ BN512 的上述设计也可以有两种选配，BK=64 和 BK=128，如果 BK 等
 
 ### 性能数字
 
-同样测 BK=64 和 BK=128 两种选配，测量方法与前面相同。
+同样测 BK=64/128、GSM=8/12/16 六种选配，测量方法与前面相同。
 
+<Update the chart to draw 7 bars per shape>
 ![BN=512 加强版性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/e82edfef82dcc34c253261ced4c29943b7bb5e50/blog/figures/perf-bn512-splitacc.png)
 
 几点观察：
 
+<This needs to be updated too I guess>
 * 这个设计在 18 个尺寸中有 7 个跑赢了 cuBLAS：8192、9216、10240、11264、13312、18432、19456，其中 10240 上领先 3.1%。作为对比，BN512 基础版赢的尺寸要少一些。
 * BK=64 在绝大部分尺寸上都比 BK=128 快 1% 到 4%，只有到了 17408 以上 BK=128 才反超，在 19456 和 20480 上分别快出 10.2% 和 9.2%。
 * 和前两种设计一样，大尺寸上真正在变的是 BK=64：它在 19456、20480 上掉到 1240 左右，而 BK=128 一直稳定在 1360 附近。
