@@ -301,7 +301,7 @@ BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果
 * 最好的一档（BK=128 + GSM=16）在 18 个尺寸中有 10 个跑赢了 cuBLAS。
 
 ## 第三种设计：BN512 加强版
-在上述的 BN512 基础设计中，epilogue 的部分还是每次从 TMEM 中 load 64 列数据，直到最后一列都 load 完成以后才释放完整的 MMA buffer，这会导致 epilogue 占据 MMA buffer 比较长地时间。在下面的新版设计中，我们会做两个方面的改进。首先，我们加大 tcgen05.ld buffer 的容量，使得它一次能存放下 128 行 x 256 列的数据 —— 共计 128KB tcgen05.ld 的结果，于是 tcgen05.ld buffer 的容量需要扩充到 128KB，即整个 SM 上一半的寄存器容量。我们先把这 128KB 的数据都加载到寄存器中以后，然后随即释放 MMA buffer 左边的一半，之后再对这 128KB 的数据进行 stage 和 TMA store 操作，以及 load 另一半的 128KB 的结果。这样设计的益处在于，MMA buffer 的其中一半（256 列）可以被提前释放，而非要等到整个 MMA buffer 数据都搬完以后才能释放。更早地释放可以使得左边一半的 MMA 可以先开始 issue，只要对应的 k tile 的数据已经到位，这样便能和 epilogue 的后续操作重叠起来，减少 MMA issue 的卡顿。
+在上述的 BN512 基础设计中，epilogue 的部分还是每次从 TMEM 中 load 64 列数据，直到最后一列都 load 完成以后才释放完整的 MMA buffer，这会导致 epilogue 占据 MMA buffer 比较长地时间。在下面的新版设计中，我们会做两个方面的改进。首先，我们加大 tcgen05.ld buffer 的容量，使得它一次能存放下 128 行 x 256 列的数据 —— 共计 128KB tcgen05.ld 的结果，于是 tcgen05.ld buffer 的容量需要扩充到 128KB，即整个 SM 上一半的寄存器容量。我们先把这 128KB 的数据都加载到寄存器中以后，随即释放 MMA buffer 左边的一半，之后再对这 128KB 的数据进行 stage 和 TMA store 操作，以及后续的 load 另一半的 128KB 结果。这样设计的益处在于，MMA buffer 的其中一半（256 列）可以被提前释放，而非要等到整个 MMA buffer 数据都搬完以后才能释放。更早地释放可以使得左边一半的 MMA 可以先开始 issue，只要对应的 k tile 的数据已经到位，这样便能和 epilogue 的后续操作重叠起来，减少 MMA issue 的卡顿。
 
 ### 性能数字
 
