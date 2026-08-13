@@ -208,10 +208,17 @@ for tile in my_output_tiles:
 以下性能数字的测量方法使用 triton.do_bench 获得 median runtime，warmup 和 repetition time 都设置为 1 秒；每个尺寸跑三轮独立的测量，每轮内部再做三次打乱顺序的采样，最后取中位数 —— 打乱顺序是为了避免先后次序带来的偏差，跑三轮则是因为单轮的结果在大尺寸上并不稳定。
 
 <Update the chart to draw 7 bars per shape>
-![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/3cce074ebf2e6ef3af347135ed9e3d561cd53170/blog/figures/perf-bn256.png)
+![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/f9e7e67f9f0cdb4dfea5edc16a104e05ebbb51b3/blog/figures/perf-bn256.png)
 
 
-在 14336 以下，两种 BK 的差距基本都在 2% 以内，互有胜负 —— BK 加倍以后 TMA buffer 从 6 个掉到 3 个，run-ahead 变浅，恰好抵消掉更少更大的内存读取带来的好处。但从 16384 开始，BK=128 就明显占优了，到 20480 上快出 **14.0%**。
+这里我们把 GSM（CTA swizzle 的深度）也一起扫了：BK=64 与 BK=128 各测 GSM 8/12/16/20，共 8 种选配。
+
+几点观察：
+
+* 10240 以下两种 BK 互有胜负，差距基本在 2% 以内 —— BK 加倍以后 TMA buffer 从 6 个掉到 3 个，run-ahead 变浅，恰好抵消掉更少更大的内存读取带来的好处。
+* 从 11264 往上 BK=128 开始稳定占优，到 20480 上快出 5% 左右。
+* GSM 在这个设计上收益有限，8、12、16 之间差别不大；但 GSM=20 明显过头了，BK=64 在 20480 上从 GSM=16 的 1227 掉到 1152。
+* 这个设计在所有尺寸上都没能跑赢 cuBLAS。
 
 ## 第二种设计：BN512 
 BN256 的设计其实已经非常流畅了，TMA buffer 有 6个，应该能够流畅地将数据加载到 SMEM 中，这样 MMA 总是有操作数可以计算；此外，MMA buffer 也有两个，所以如果一个 output tile 的 epilogue 能在下下个 output tile 开始之前完成，理论上我们就可以持续不停的无卡顿地 issue MMA，这已经是一个非常流畅的设计了。
@@ -295,27 +302,35 @@ for tile in my_output_tiles:
 BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果 BK=64 和 128 分别使用 4 个和 2 个 TMA buffer。性能测量方法与上面相同。
 
 <Update the chart to draw 7 bars per shape>
-![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/3cce074ebf2e6ef3af347135ed9e3d561cd53170/blog/figures/perf-bn512.png)
+![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/f9e7e67f9f0cdb4dfea5edc16a104e05ebbb51b3/blog/figures/perf-bn512.png)
 
-可以看到，对于稍大一些的方阵，相比 BN256，BN512 的确能达到更高的性能。一个可能的解释是，对于比较大的方阵，它们的 K 维度会比较大，所以 Epilogue 所占时间的比例相比整个计算时间会缩小。BN512 能够使计算部分更快，但是在 Epilogue 会有卡顿，便适用于这种 K 维度比较大的情况。
+同样扫了 GSM 8/12/16/20 与两种 BK，共 8 种选配。
+
+几点观察：
+
+* 相比 BN256，BN512 在稍大一些的方阵上确实能达到更高的性能。一个可能的解释是，方阵越大 K 维度也越大，Epilogue 所占的时间比例便相应缩小 —— BN512 让计算部分更快，代价是 Epilogue 会卡顿，所以正适合 K 比较大的情况。
+* GSM 在这里的作用比 BN256 明显得多：BK=128 在 20480 上从 GSM=8 的 1423 涨到 GSM=16 的 1468；BK=64 在 17408 上从 1316 涨到 1412。
+* 但 GSM 到 16 就到头了，GSM=20 在多数尺寸上略逊于 16，不再有额外收益。
+* 最好的一档（BK=128 + GSM=16）在 18 个尺寸中有 10 个跑赢了 cuBLAS。
 
 ## 第三种设计：BN512 加强版
 在上述的 BN512 基础设计中，epilogue 的部分还是每次从 TMEM 中 load 64 列数据，直到最后一列都 load 完成以后才释放完整的 MMA buffer，这会导致 epilogue 占据 MMA buffer 比较长地时间。在下面的新版设计中，我们会做两个方面的改进。首先，我们加大 tcgen05.ld buffer 的容量，使得它一次能存放下 256 列的数据 —— 即将一半的寄存器文件用于存储 tcgen05.ld 的结果，这也需要我们把 epilogue warp 的数量从 4 个扩充到 8 个，为了没有 register spilling。第二个改进是，在第一个 256 列加载到寄存器中以后，我们马上释放 MMA buffer 左边的一半 —— 即左边一半的 256 列，这样便能使得 MMA 可以在左边一半的 buffer 先继续 issue，从而实现尽早让 MMA 可以 issue 起来。不过，在目前这一版设计中，左边的 MMA 哪怕能够先跑起来，也只能跑一个 k tile，之后还是得等待右边一半的 MMA buffer 被释放，然后右边的一半 MMA 也 issue 以后再一起开始一下个 k tile。尽管如此，相比 BN512，这样的设计已经可以让 MMA 的 issue 被提前一点点了。
 
 ### 性能数字
 
-同样测 BK=64/128、GSM=8/12/16 六种选配，测量方法与前面相同。
+这一组我们同样扫了 GSM 8/12/16/20 与两种 BK，共 8 种选配。三个设计的数字都取自同一个节点，
+三次运行里 cuBLAS 那一列彼此相差都在 0.3% 以内，可以作为对照，说明三张图之间也是可比的。
 
-<Update the chart to draw 7 bars per shape>
-![BN=512 加强版性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/e82edfef82dcc34c253261ced4c29943b7bb5e50/blog/figures/perf-bn512-splitacc.png)
+![BN=512 加强版性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/f9e7e67f9f0cdb4dfea5edc16a104e05ebbb51b3/blog/figures/perf-bn512-splitacc.png)
+
+完整数字见 [blog/perf-data.md](./perf-data.md)。
 
 几点观察：
 
-<This needs to be updated too I guess>
-* 这个设计在 18 个尺寸中有 7 个跑赢了 cuBLAS：8192、9216、10240、11264、13312、18432、19456，其中 10240 上领先 3.1%。作为对比，BN512 基础版赢的尺寸要少一些。
-* BK=64 在绝大部分尺寸上都比 BK=128 快 1% 到 4%，只有到了 17408 以上 BK=128 才反超，在 19456 和 20480 上分别快出 10.2% 和 9.2%。
-* 和前两种设计一样，大尺寸上真正在变的是 BK=64：它在 19456、20480 上掉到 1240 左右，而 BK=128 一直稳定在 1360 附近。
-* 需要说明的是，这一组数字与前两组来自不同的节点，所以三张图之间的绝对值不宜直接比较，每张图内部的性能数字之间才是可比的。
+* 最好的一档是 BK=128 + GSM=16，它在 18 个尺寸中有 10 个跑赢了 cuBLAS，20480 上达到 1472。
+* GSM 对 BK=64 的影响在大尺寸上尤其明显：20480 上从 GSM=8 的 1296 涨到 GSM=16 的 1365。GSM 决定的正是相邻 CTA 之间共享哪些 tile，所以这个趋势指向 L2 的复用效率 —— 尺寸越大、工作集越超出 L2，swizzle 的深度就越关键。
+* 但 GSM 并不是越大越好：GSM=20 在多数尺寸上都不如 16，BK=64 在 20480 上反而从 1365 掉回 1330。16 附近就是这个设计的拐点。
+* 大尺寸上这一档很稳：BK=128 从 15360 到 20480 一直在 1450 上下，而 BN256 的对应曲线只有 1290 左右。第二种设计在这个区间与它基本持平，splitacc 主要是把 BK=64 那一侧拉得更齐。
 
 ## 工具
 在 Meshy 我们开发了以下两个与此话题相关的工具：
