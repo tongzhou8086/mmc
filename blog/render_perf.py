@@ -36,13 +36,15 @@ SERIES_COL = [3, 1, 2]
 # first in grey as always, then each BK shaded light to dark by GSM depth, so
 # the two families stay distinguishable by hue and GSM by lightness.
 SERIES_GSM = [
-    ("torch.matmul (cuBLAS)", "#b7bfc9", 7),
-    ("BK=64  GSM=8", "#aec4d8", 1),
-    ("BK=64  GSM=12", "#7f9dbb", 2),
-    ("BK=64  GSM=16", "#4f7292", 3),
-    ("BK=128  GSM=8", "#9dc3a2", 4),
-    ("BK=128  GSM=12", "#6f9e74", 5),
-    ("BK=128  GSM=16", "#3f6243", 6),
+    ("torch.matmul (cuBLAS)", "#b7bfc9", 9),
+    ("BK=64  GSM=8", "#c3d3e2", 1),
+    ("BK=64  GSM=12", "#9ab4cd", 2),
+    ("BK=64  GSM=16", "#6d90b0", 3),
+    ("BK=64  GSM=20", "#456682", 4),
+    ("BK=128  GSM=8", "#b3d2b7", 5),
+    ("BK=128  GSM=12", "#87b28d", 6),
+    ("BK=128  GSM=16", "#5b8a61", 7),
+    ("BK=128  GSM=20", "#375a3c", 8),
 ]
 
 
@@ -119,10 +121,10 @@ def main():
               OUTDIR / "perf-bn256")
     bar_chart(read_rows("## BN=512"), "BN=512 · cuBLAS vs BK=64 vs BK=128",
               OUTDIR / "perf-bn512")
-    bar_chart(read_rows("## BN=512 splitacc", ncols=7),
+    bar_chart(read_rows("## BN=512 splitacc", ncols=9),
               "BN=512 splitacc · GSM sweep, both BK settings",
               OUTDIR / "perf-bn512-splitacc",
-              series=SERIES_GSM, figsize=(14.6, 5.2))
+              series=SERIES_GSM, figsize=(16.0, 5.6))
 
 
 if __name__ == "__main__":
