@@ -37,7 +37,7 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 这四种 buffer 是数据流模型里的逻辑概念，它们各自的物理载体如下图所示。可以看到 TMA buffer 和 Store buffer 同属 SMEM 介质、要互相抢容量，MMA buffer 则独占 TMEM 空间，而 tcgen05.ld buffer 只是寄存器文件中的一部分 —— 寄存器的其余部分还要用于地址计算、循环变量、各 warp 的私有状态等等。
 
-![四种 buffer 的物理载体](https://raw.githubusercontent.com/tongzhou8086/mmc/75ff2242f967e4aa35bdf6a03df52a8b08350093/data-flow-models/figures/sm-storage-map.png)
+![四种 buffer 的物理载体](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/data-flow-models/figures/sm-storage-map.png)
 
 事实上内存也是一种 buffer，但由于从流水线调度的视角，内存操作并不涉及任何的资源调度策略，所以这里略去不表。
 
@@ -59,7 +59,7 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 把这 5 种操作串起来看，就是下面这张图 —— 每个箭头是一种操作，箭头两端则是它读取的源 buffer 和写入的目的 buffer：
 
-![5 种操作及其源和目的 buffer](https://raw.githubusercontent.com/tongzhou8086/mmc/78406bb3a6bf074691b2c305124ea9ae3b5a228e/data-flow-models/figures/operations-chain.png)
+![5 种操作及其源和目的 buffer](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/data-flow-models/figures/operations-chain.png)
 
 第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果，必须保存在 TMEM 中，如果所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取出来、读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 tcgen05.ld，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld 读取到寄存器中的数据是按列分布到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的 layout 方式使得，如果你直接将寄存器结果写入内存就会导致 uncoalesced memory access。于是在我们所有的设计中，都会将 tcgen05.ld 的结果先写入一个 SMEM 缓冲区，在缓冲区进行重组，每行能够凑满 128 个连续字节了再进行 coalesced memory write，这也便是最后的两步。
 
@@ -75,13 +75,13 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 ### 单个 output tile 的时序图
 对于单个的 output tile，如果我们假设它的 k 层循环迭代只有一次，即 K = BK，那上述 5 种操作的时序图便会长下面这个样子：
 
-![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline.png)
+![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/data-flow-models/figures/pipeline-timeline.png)
 
 一个箭头的起点表示操作的开始，终点则表示操作完成，所以箭头的终点也会代表对应 buffer 的状态。譬如，TMA load 箭头的终点则表示对应的 TMA buffer 状态变为“可读”，即 TMA load 操作已完成；与此同时，一种操作的结束也代表其源 buffer 的状态变为“可写”。譬如 MMA 箭头的终点代表一次 BK tile 的 MMA 操作完成，假设 K=BK，这时便会有两个Buffer 的状态都会改变：目的 Buffer 状态变为“可读”，以及源 Buffer 状态变为“可写” —— 数据既然已被消费完毕，那源 Buffer 当然就可以重新写入新的数据喽。
 
 另外，这张图上看不到的部分还包括，它只画出了一个操作能开始的条件之一，即源 Buffer 可读，另一个条件，即目的 Buffer 可写，图上是看不出来的。举个例子，假如一次 MMA 操作进行之前，哪怕对应的 TMA load 操作已经完成，若是将要被写入的 MMA buffer 目前状态并不可写，那 MMA 操作也无法被 issue。我们用下面这张图来表示这种情况，注意 MMA 开始前的那个小的 gap：
 
-![同一个 tile，出现了 stall](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline-stall.png)
+![同一个 tile，出现了 stall](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/data-flow-models/figures/pipeline-timeline-stall.png)
 
 ### 减少 MMA issue 的 stall
 流水线调度设计的根本主旨是减少 MMA issue 的 stall。
@@ -207,7 +207,7 @@ for tile in my_output_tiles:
 下面我们看一下这个设计在方阵上的性能是多少，事实上我们考虑两种不同的 BK 选配：64/128，以及三种不同的 GROUP_SIZE_M （简称 GSM）选配:8/12/16。不同的 GSM 选配仅仅需要改一个常数参数，而 BK=64/128 的区别也仅仅在于把 TMA buffer 的数量砍半，逻辑部分完全一致。
 以下性能数字的测量方法使用 triton.do_bench 获得 median runtime，warmup 和 repetition time 都设置为 1 秒；每个尺寸跑三轮独立的测量，每轮内部再做三次打乱顺序的采样，最后取中位数 —— 打乱顺序是为了避免先后次序带来的偏差，跑三轮则是因为单轮的结果在大尺寸上并不稳定。
 
-![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/f9e7e67f9f0cdb4dfea5edc16a104e05ebbb51b3/blog/figures/perf-bn256.png)
+![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/blog/figures/perf-bn256.png)
 
 
 这里我们把 GSM（CTA swizzle 的深度）也一起扫了：BK=64 与 BK=128 各测 GSM 8/12/16，共 6 种选配。（GSM=20 也测了，但它在三个设计上都没有赢过，所以图里就不画了，数字仍留在 perf-data.md 里。）
@@ -300,7 +300,7 @@ for tile in my_output_tiles:
 
 BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果 BK=64 和 128 分别使用 4 个和 2 个 TMA buffer。性能测量方法与上面相同。
 
-![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/f9e7e67f9f0cdb4dfea5edc16a104e05ebbb51b3/blog/figures/perf-bn512.png)
+![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/blog/figures/perf-bn512.png)
 
 同样扫了 GSM 8/12/16 与两种 BK，共 6 种选配。
 
@@ -319,7 +319,7 @@ BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果
 这一组我们同样扫了 GSM 8/12/16 与两种 BK，共 6 种选配。三个设计的数字都取自同一个节点，
 三次运行里 cuBLAS 那一列彼此相差都在 0.3% 以内，可以作为对照，说明三张图之间也是可比的。
 
-![BN=512 加强版性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/f9e7e67f9f0cdb4dfea5edc16a104e05ebbb51b3/blog/figures/perf-bn512-splitacc.png)
+![BN=512 加强版性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/blog/figures/perf-bn512-splitacc.png)
 
 完整数字见 [blog/perf-data.md](./perf-data.md)。
 
