@@ -214,9 +214,13 @@ for tile in my_output_tiles:
 在 14336 以下，两种 BK 的差距基本都在 2% 以内，互有胜负 —— BK 加倍以后 TMA buffer 从 6 个掉到 3 个，run-ahead 变浅，恰好抵消掉更少更大的内存读取带来的好处。但从 16384 开始，BK=128 就明显占优了，到 20480 上快出 **14.0%**。
 
 ## 第二种设计：BN512 
-BN256 的设计其实已经非常低卡顿了，已经是一种很好的设计了，不过还是有一个明显的提升点，即提升算术强度 —— 通过增大 BN 至512，使用一个单一的 128x512 的逻辑 MMA buffer。这样可以提高算术强度，即计算效率；与此同时，由于只使用了一个逻辑 buffer，draining 的延迟更难以被掩盖。
+BN256 的设计其实已经非常流畅了，TMA buffer 有 6个，应该能够流畅地将数据加载到 SMEM 中，这样 MMA 总是有操作数可以计算；此外，MMA buffer 也有两个，所以如果一个 output tile 的 epilogue 能在下下个 output tile 开始之前完成，理论上我们就可以持续不停的无卡顿地 issue MMA，这已经是一个非常流畅的设计了。
 
-BN512 会把完整的 TMEM 全部用上 —— 即两个 MMA buffer 同时被使用，在逻辑上，我们把它们视为一个 buffer，大小为 128×512，以此提高计算效率，算得更高效一些。但是 trade off 在于每一轮算完以后，在 Epilogue 部分需要先把 MMA buffer 里面的内容先全部搬运出来以后才能重新复用它，进行新一轮的 accumulation，所以这里 MMA 操作就不再是完全无缝衔接了，而是在一个 output tile 结束之后，会稍微卡顿那么一下下，直到 MMA buffer 被释放为止。Epilogue 的部分则和 BN256 的设计保持一致，仍然以 64 列为单位从 TMEM 读出、stage、然后 store。
+不过，根据实际性能结果，我们发现，哪怕 MMA 的确能够持续不断地在 issue，但是每次只用了一半的 TMEM 做 accumulation 算术强度还是不太够，也就是说，同样的数据量进来，它产生的计算量有限，于是，哪怕 MMA 的 issue 不卡顿，但是实际产生的计算量还是无法吃满 MMA Engine。
+
+于是在第二种设计中，我们换一种新的思路，即，把整个 TMEM 作为一个 MMA buffer 使用，其 BN 是 512，简单的计算我们可以发现，BN=512 下，每个 K tile 的数据量会变为 1.5 倍 —— 从 32KB 变成 48KB，而计算量则会变为两倍，这样会导致同样的数据量进来，能够产生更大的计算量，更有可能能够吃满 MMA engine。但是与此同时，只用了一个逻辑上的 MMA buffer 的话，就会导致在 epilogue draining 期间，后续的 MMA 无法进行 issue，需要等待这个 MMA buffer 被腾空以后才能够 issue 后续的 MMA，这会导致在两个 output tile 中间交接的时候会造成一些卡顿。简而言之，两者的区别总结如下：
+
+**BN256 可以无卡顿地持续 issue MMA，但是产生的 MMA 计算量可能无法吃满硬件算力；BN512 通过加大 accumulation buffer 能够将 MMA 的算力吃得更满，但是与此同时，在两个 output tile 交接的时候会有些卡顿。**
 
 我们先计算一下 A tile 和 B tile 现在分别的大小，BM 依然设为 128，BN 配成 512，BK 先取 64，套用前面的公式：
 
@@ -225,11 +229,10 @@ BN512 会把完整的 TMEM 全部用上 —— 即两个 MMA buffer 同时被使
 
 所以一个 TMA buffer（一个 A tile 加一个 B tile）是 **48KB**，比 BN256 时的 32KB 大了 50% —— 大出来的部分全在 B tile 上，因为 BN 翻倍了。
 
-SMEM 的容量决定了能配几个。我们给 TMA buffer 配 **4 个**，共 192KB；store buffer 依然配 **2 个**，每个是 128 × 64 × 2 = 16KB，共 32KB。两者相加 224KB，再加上 mbarrier 和对齐占用的 1KB，一共 225KB，正好落在一个 SM 能给单个 CTA 的 SMEM 容量之内。可以看到 BN512 的代价首先体现在这里：TMA buffer 从 6 个掉到了 4 个，流水线的 run-ahead 深度变浅了。
+SMEM 的容量决定了能配几个。我们给 TMA buffer 配 **4 个**，共 192KB；store buffer 依然配 **2 个**，每个是 128 × 64 × 2 = 16KB，共 32KB。两者相加还是 224KB。
 
-TMEM 那边的变化更为根本：BN=512 意味着**一个 MMA buffer 就占满了 128 行 × 512 列的整个 TMEM**，所以这里只有一个 MMA buffer，不再有 BN256 时两个 buffer 交替的余地。这正是 BN512 的核心 trade off —— 算术强度更高，但一个 output tile 的 draining 必须在下一个 output tile 的 MMA 开始之前完成，而不再是宽松的「下下个」。
 
-用伪代码表达如下 —— 和 BN256 用的是同一套原语：
+代码的同步逻辑如下，主要区别在于此时没有两个 MMA buffer 的互相切换了：
 
 ```text
 # ── 参数 ──────────────────────────────────────────────
@@ -294,6 +297,8 @@ BN512 的上述设计也可以有两种选配，BK=64 和 BK=128，如果 BK 等
 这里我们测两种选配：BK=64 和 BK=128。测量方法与上面相同。
 
 ![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/3cce074ebf2e6ef3af347135ed9e3d561cd53170/blog/figures/perf-bn512.png)
+
+可以看到，对于稍大一些的方阵，相比 BN256，BN512 的确能达到更高的性能。一个可能的解释是，对于比较大的方阵，它们的 K 维度会比较大，所以 Epilogue 所占时间的比例相比整个计算时间会缩小。BN512 能够使计算部分更快，但是在 Epilogue 会有卡顿，便适用于这种 K 维度比较大的情况。
 
 
 ## 工具
