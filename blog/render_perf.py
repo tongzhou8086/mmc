@@ -98,6 +98,9 @@ def main():
               OUTDIR / "perf-bn256")
     bar_chart(read_rows("## BN=512"), "BN=512 · cuBLAS vs BK=64 vs BK=128",
               OUTDIR / "perf-bn512")
+    bar_chart(read_rows("## BN=512 splitacc"),
+              "BN=512 splitacc · cuBLAS vs BK=64 vs BK=128",
+              OUTDIR / "perf-bn512-splitacc")
 
 
 if __name__ == "__main__":
