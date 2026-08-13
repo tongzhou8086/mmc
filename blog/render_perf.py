@@ -32,17 +32,37 @@ SERIES = [
 # column index in the parsed rows for each series above
 SERIES_COL = [3, 1, 2]
 
+# The splitacc table also sweeps GSM, so it needs its own series list: cuBLAS
+# first in grey as always, then each BK shaded light to dark by GSM depth, so
+# the two families stay distinguishable by hue and GSM by lightness.
+SERIES_GSM = [
+    ("torch.matmul (cuBLAS)", "#b7bfc9", 7),
+    ("BK=64  GSM=8", "#aec4d8", 1),
+    ("BK=64  GSM=12", "#7f9dbb", 2),
+    ("BK=64  GSM=16", "#4f7292", 3),
+    ("BK=128  GSM=8", "#9dc3a2", 4),
+    ("BK=128  GSM=12", "#6f9e74", 5),
+    ("BK=128  GSM=16", "#3f6243", 6),
+]
 
-def read_rows(heading):
-    """(shape, bk64, bk128, torch) rows from the table under a heading."""
+
+def read_rows(heading, ncols=3):
+    """Rows under a heading as (shape, v1, ..., vn).
+
+    ncols=3 is the delta-carrying three-series table; ncols=7 is the splitacc
+    table, which has no delta column because there is no single pair to compare.
+    """
     text = DATA.read_text()
+    body = r"\s*([\d.]+)\s*\|" * ncols
+    if ncols == 3:
+        body = (r"\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*[+-][\d.]+%\s*\|"
+                r"\s*([\d.]+)\s*\|")
     rows = []
     for line in text[text.index(heading):].split("\n"):
-        m = re.match(r"\|\s*(\d+)³\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|"
-                     r"\s*[+-][\d.]+%\s*\|\s*([\d.]+)\s*\|", line)
+        m = re.match(r"\|\s*(\d+)³\s*\|" + body, line)
         if m:
-            rows.append((int(m.group(1)), float(m.group(2)),
-                         float(m.group(3)), float(m.group(4))))
+            rows.append(tuple([int(m.group(1))]
+                              + [float(g) for g in m.groups()[1:]]))
         elif rows and not line.startswith("|"):
             break
     if not rows:
@@ -50,16 +70,17 @@ def read_rows(heading):
     return sorted(rows)
 
 
-def bar_chart(rows, title, path, note=None):
+def bar_chart(rows, title, path, note=None, series=None, figsize=(12.4, 4.9)):
     shapes = [r[0] for r in rows]
-    fig, ax = plt.subplots(figsize=(12.4, 4.9))
-    n = len(SERIES)
-    width = 0.82 / n
-    for i, (label, colour) in enumerate(SERIES):
-        vals = [r[SERIES_COL[i]] for r in rows]
+    fig, ax = plt.subplots(figsize=figsize)
+    series = series or [(l, c, k) for (l, c), k in zip(SERIES, SERIES_COL)]
+    n = len(series)
+    width = 0.86 / n
+    for i, (label, colour, col) in enumerate(series):
+        vals = [r[col] for r in rows]
         xs = [x + (i - (n - 1) / 2) * width for x in range(len(rows))]
         ax.bar(xs, vals, width=width * 0.94, label=label, color=colour,
-               edgecolor="white", linewidth=0.6, zorder=3)
+               edgecolor="white", linewidth=0.5, zorder=3)
 
     ax.set_xticks(range(len(rows)))
     ax.set_xticklabels([f"{s // 1024}K" for s in shapes], fontsize=9)
@@ -79,8 +100,8 @@ def bar_chart(rows, title, path, note=None):
         ax.spines[side].set_visible(False)
     ax.spines["bottom"].set_color(GRID)
     ax.tick_params(axis="both", length=0, colors=MUTED)
-    ax.legend(frameon=False, fontsize=9.5, ncol=3, loc="upper center",
-              bbox_to_anchor=(0.5, -0.16))
+    ax.legend(frameon=False, fontsize=9.5, ncol=min(len(series), 4),
+              loc="upper center", bbox_to_anchor=(0.5, -0.16))
     if note:
         ax.text(0.0, -0.30, note, transform=ax.transAxes, ha="left",
                 va="top", fontsize=8.5, color=MUTED)
@@ -98,9 +119,10 @@ def main():
               OUTDIR / "perf-bn256")
     bar_chart(read_rows("## BN=512"), "BN=512 · cuBLAS vs BK=64 vs BK=128",
               OUTDIR / "perf-bn512")
-    bar_chart(read_rows("## BN=512 splitacc"),
-              "BN=512 splitacc · cuBLAS vs BK=64 vs BK=128",
-              OUTDIR / "perf-bn512-splitacc")
+    bar_chart(read_rows("## BN=512 splitacc", ncols=7),
+              "BN=512 splitacc · GSM sweep, both BK settings",
+              OUTDIR / "perf-bn512-splitacc",
+              series=SERIES_GSM, figsize=(14.6, 5.2))
 
 
 if __name__ == "__main__":
