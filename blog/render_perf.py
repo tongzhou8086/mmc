@@ -32,19 +32,19 @@ SERIES = [
 # column index in the parsed rows for each series above
 SERIES_COL = [3, 1, 2]
 
-# The splitacc table also sweeps GSM, so it needs its own series list: cuBLAS
-# first in grey as always, then each BK shaded light to dark by GSM depth, so
-# the two families stay distinguishable by hue and GSM by lightness.
+# The tables also sweep GSM, so they need their own series list: cuBLAS first in
+# grey as always, then each BK shaded light to dark by GSM depth, so the two
+# families stay distinguishable by hue and GSM by lightness. GSM=20 is measured
+# and kept in perf-data.md, but left out of the charts - it never wins, so it
+# only costs a bar's worth of width.
 SERIES_GSM = [
     ("torch.matmul (cuBLAS)", "#b7bfc9", 9),
     ("BK=64  GSM=8", "#c3d3e2", 1),
-    ("BK=64  GSM=12", "#9ab4cd", 2),
-    ("BK=64  GSM=16", "#6d90b0", 3),
-    ("BK=64  GSM=20", "#456682", 4),
+    ("BK=64  GSM=12", "#8babc8", 2),
+    ("BK=64  GSM=16", "#4f7396", 3),
     ("BK=128  GSM=8", "#b3d2b7", 5),
-    ("BK=128  GSM=12", "#87b28d", 6),
-    ("BK=128  GSM=16", "#5b8a61", 7),
-    ("BK=128  GSM=20", "#375a3c", 8),
+    ("BK=128  GSM=12", "#7aa881", 6),
+    ("BK=128  GSM=16", "#41704a", 7),
 ]
 
 
@@ -91,8 +91,9 @@ def bar_chart(rows, title, path, note=None, series=None, figsize=(12.4, 4.9)):
     ax.set_ylabel("TFLOP/s", fontsize=10, color=MUTED)
     # start above zero: every bar here is >1100, so a zero baseline would hide
     # the differences the surrounding text is about
-    lo = min(min(r[1:]) for r in rows)
-    hi = max(max(r[1:]) for r in rows)
+    cols = [c for _, _, c in series]
+    lo = min(min(r[c] for c in cols) for r in rows)
+    hi = max(max(r[c] for c in cols) for r in rows)
     ax.set_ylim(max(0.0, lo - 90), hi + 70)
     ax.set_title(title, fontsize=13, fontweight="bold", color=INK, loc="left",
                  pad=12)
@@ -121,11 +122,11 @@ def main():
             ("## BN=256", "BN=256 · GSM sweep, both BK settings", "perf-bn256"),
             ("## BN=512", "BN=512 · GSM sweep, both BK settings", "perf-bn512")):
         bar_chart(read_rows(heading, ncols=9), title, OUTDIR / stem,
-                  series=SERIES_GSM, figsize=(16.0, 5.6))
+                  series=SERIES_GSM, figsize=(14.2, 5.4))
     bar_chart(read_rows("## BN=512 splitacc", ncols=9),
               "BN=512 splitacc · GSM sweep, both BK settings",
               OUTDIR / "perf-bn512-splitacc",
-              series=SERIES_GSM, figsize=(16.0, 5.6))
+              series=SERIES_GSM, figsize=(14.2, 5.4))
 
 
 if __name__ == "__main__":
