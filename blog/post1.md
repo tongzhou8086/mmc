@@ -201,6 +201,8 @@ for tile in my_output_tiles:
 
 从伪代码里也能读出这个设计最关键的一处安排：MMA warp 每换一个 output tile 就切换 MMA buffer，而 epilogue 在把最后一段读进寄存器之后就立刻 `make_free(mma_buffers[acc])`。两者合起来的效果是，一个 output tile 的 draining 只要在**下下个** output tile 开始前完成，MMA 就不会卡住。这个时间窗口和 K 的大小有关：K 越大窗口越大，K 越小则越可能造成 MMA issue 的卡顿。流水线设计的最终目标就是**最小卡顿地吃满 MMA**。
 
+值得注意的是，同样的这一套逻辑也完全能够适配 BK=128 的情况，BK=128 与 BK=64 唯一的区别就是 TMA Buffer 从 6 个变为了 3 个，而逻辑部分完全不变。
+
 ### 性能数字
 
 下面我们看一下这个设计在方阵上的性能是多少，事实上我们考虑两种不同的选配，BK=64 和 BK=128，上述的讨论中，假定的 BK 等于 64，BK 等于 128 的情况很简单，就是把 TMA buffer 的数量砍半就可以，其他原理不变。以下性能数字的测量方法使用 triton.do_bench 获得 median runtime，warmup 和 repetition time 都设置为 1 秒；每个尺寸跑三轮独立的测量，每轮内部再做三次打乱顺序的采样，最后取中位数 —— 打乱顺序是为了避免先后次序带来的偏差，跑三轮则是因为单轮的结果在大尺寸上并不稳定。
