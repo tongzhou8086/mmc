@@ -37,7 +37,7 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 这四种 buffer 是数据流模型里的逻辑概念，它们各自的物理载体如下图所示。可以看到 TMA buffer 和 Store buffer 同属 SMEM 介质、要互相抢容量，MMA buffer 则独占 TMEM 空间，而 tcgen05.ld buffer 只是寄存器文件中的一部分 —— 寄存器的其余部分还要用于地址计算、循环变量、各 warp 的私有状态等等。
 
-![四种 buffer 的物理载体](https://raw.githubusercontent.com/tongzhou8086/mmc/75ff2242f967e4aa35bdf6a03df52a8b08350093/data-flow-models/figures/sm-storage-map.png)
+![四种 buffer 的物理载体](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/data-flow-models/figures/sm-storage-map.png)
 
 事实上内存也是一种 buffer，但由于从流水线调度的视角，内存操作并不涉及任何的资源调度策略，所以这里略去不表。
 
@@ -59,7 +59,7 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 把这 5 种操作串起来看，就是下面这张图 —— 每个箭头是一种操作，箭头两端则是它读取的源 buffer 和写入的目的 buffer：
 
-![5 种操作及其源和目的 buffer](https://raw.githubusercontent.com/tongzhou8086/mmc/78406bb3a6bf074691b2c305124ea9ae3b5a228e/data-flow-models/figures/operations-chain.png)
+![5 种操作及其源和目的 buffer](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/data-flow-models/figures/operations-chain.png)
 
 第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果，必须保存在 TMEM 中，如果所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取出来、读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 tcgen05.ld，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld 读取到寄存器中的数据是按列分布到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的 layout 方式使得，如果你直接将寄存器结果写入内存就会导致 uncoalesced memory access。于是在我们所有的设计中，都会将 tcgen05.ld 的结果先写入一个 SMEM 缓冲区，在缓冲区进行重组，每行能够凑满 128 个连续字节了再进行 coalesced memory write，这也便是最后的两步。
 
@@ -75,13 +75,13 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 ### 单个 output tile 的时序图
 对于单个的 output tile，如果我们假设它的 k 层循环迭代只有一次，即 K = BK，那上述 5 种操作的时序图便会长下面这个样子：
 
-![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline.png)
+![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/data-flow-models/figures/pipeline-timeline.png)
 
 一个箭头的起点表示操作的开始，终点则表示操作完成，所以箭头的终点也会代表对应 buffer 的状态。譬如，TMA load 箭头的终点则表示对应的 TMA buffer 状态变为“可读”，即 TMA load 操作已完成；与此同时，一种操作的结束也代表其源 buffer 的状态变为“可写”。譬如 MMA 箭头的终点代表一次 BK tile 的 MMA 操作完成，假设 K=BK，这时便会有两个Buffer 的状态都会改变：目的 Buffer 状态变为“可读”，以及源 Buffer 状态变为“可写” —— 数据既然已被消费完毕，那源 Buffer 当然就可以重新写入新的数据喽。
 
 另外，这张图上看不到的部分还包括，它只画出了一个操作能开始的条件之一，即源 Buffer 可读，另一个条件，即目的 Buffer 可写，图上是看不出来的。举个例子，假如一次 MMA 操作进行之前，哪怕对应的 TMA load 操作已经完成，若是将要被写入的 MMA buffer 目前状态并不可写，那 MMA 操作也无法被 issue。我们用下面这张图来表示这种情况，注意 MMA 开始前的那个小的 gap：
 
-![同一个 tile，出现了 stall](https://raw.githubusercontent.com/tongzhou8086/mmc/be07fd0dcb001ff82e537ab6f2db99110df0be16/data-flow-models/figures/pipeline-timeline-stall.png)
+![同一个 tile，出现了 stall](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/data-flow-models/figures/pipeline-timeline-stall.png)
 
 ### 减少 MMA issue 的 stall
 流水线调度设计的根本主旨是减少 MMA issue 的 stall。
@@ -207,11 +207,17 @@ for tile in my_output_tiles:
 下面我们看一下这个设计在方阵上的性能是多少，事实上我们考虑两种不同的 BK 选配：64/128，以及三种不同的 GROUP_SIZE_M （简称 GSM）选配:8/12/16。不同的 GSM 选配仅仅需要改一个常数参数，而 BK=64/128 的区别也仅仅在于把 TMA buffer 的数量砍半，逻辑部分完全一致。
 以下性能数字的测量方法使用 triton.do_bench 获得 median runtime，warmup 和 repetition time 都设置为 1 秒；每个尺寸跑三轮独立的测量，每轮内部再做三次打乱顺序的采样，最后取中位数 —— 打乱顺序是为了避免先后次序带来的偏差，跑三轮则是因为单轮的结果在大尺寸上并不稳定。
 
-<Update the chart to draw 7 bars per shape>
-![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/3cce074ebf2e6ef3af347135ed9e3d561cd53170/blog/figures/perf-bn256.png)
+![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/blog/figures/perf-bn256.png)
 
 
-在 14336 以下，两种 BK 的差距基本都在 2% 以内，互有胜负 —— BK 加倍以后 TMA buffer 从 6 个掉到 3 个，run-ahead 变浅，恰好抵消掉更少更大的内存读取带来的好处。但从 16384 开始，BK=128 就明显占优了，到 20480 上快出 **14.0%**。
+这里我们把 GSM（CTA swizzle 的深度）也一起扫了：BK=64 与 BK=128 各测 GSM 8/12/16，共 6 种选配。（GSM=20 也测了，但它在三个设计上都没有赢过，所以图里就不画了，数字仍留在 perf-data.md 里。）
+
+几点观察：
+
+* 10240 以下两种 BK 互有胜负，差距基本在 2% 以内 —— BK 加倍以后 TMA buffer 从 6 个掉到 3 个，run-ahead 变浅，恰好抵消掉更少更大的内存读取带来的好处。
+* 从 11264 往上 BK=128 开始稳定占优，到 20480 上快出 5% 左右。
+* GSM 在这个设计上收益有限，8、12、16 之间差别不大；再往上就是负收益了，BK=64 在 20480 上从 GSM=16 的 1227 掉到 GSM=20 的 1152。
+* 这个设计在所有尺寸上都没能跑赢 cuBLAS。
 
 ## 第二种设计：BN512 
 BN256 的设计其实已经非常流畅了，TMA buffer 有 6个，应该能够流畅地将数据加载到 SMEM 中，这样 MMA 总是有操作数可以计算；此外，MMA buffer 也有两个，所以如果一个 output tile 的 epilogue 能在下下个 output tile 开始之前完成，理论上我们就可以持续不停的无卡顿地 issue MMA，这已经是一个非常流畅的设计了。
@@ -294,28 +300,35 @@ for tile in my_output_tiles:
 
 BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果 BK=64 和 128 分别使用 4 个和 2 个 TMA buffer。性能测量方法与上面相同。
 
-<Update the chart to draw 7 bars per shape>
-![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/3cce074ebf2e6ef3af347135ed9e3d561cd53170/blog/figures/perf-bn512.png)
+![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/blog/figures/perf-bn512.png)
 
-可以看到，对于稍大一些的方阵，相比 BN256，BN512 的确能达到更高的性能。一个可能的解释是，对于比较大的方阵，它们的 K 维度会比较大，所以 Epilogue 所占时间的比例相比整个计算时间会缩小。BN512 能够使计算部分更快，但是在 Epilogue 会有卡顿，便适用于这种 K 维度比较大的情况。
+同样扫了 GSM 8/12/16 与两种 BK，共 6 种选配。
+
+几点观察：
+
+* 相比 BN256，BN512 在稍大一些的方阵上确实能达到更高的性能。一个可能的解释是，方阵越大 K 维度也越大，Epilogue 所占的时间比例便相应缩小 —— BN512 让计算部分更快，代价是 Epilogue 会卡顿，所以正适合 K 比较大的情况。
+* GSM 在这里的作用比 BN256 明显得多：BK=128 在 20480 上从 GSM=8 的 1423 涨到 GSM=16 的 1468；BK=64 在 17408 上从 1316 涨到 1412。
+* 但 GSM 到 16 就到头了，再加深（GSM=20）在多数尺寸上反而略逊于 16。
+* 最好的一档（BK=128 + GSM=16）在 18 个尺寸中有 10 个跑赢了 cuBLAS。
 
 ## 第三种设计：BN512 加强版
 在上述的 BN512 基础设计中，epilogue 的部分还是每次从 TMEM 中 load 64 列数据，直到最后一列都 load 完成以后才释放完整的 MMA buffer，这会导致 epilogue 占据 MMA buffer 比较长地时间。在下面的新版设计中，我们会做两个方面的改进。首先，我们加大 tcgen05.ld buffer 的容量，使得它一次能存放下 256 列的数据 —— 即将一半的寄存器文件用于存储 tcgen05.ld 的结果，这也需要我们把 epilogue warp 的数量从 4 个扩充到 8 个，为了没有 register spilling。第二个改进是，在第一个 256 列加载到寄存器中以后，我们马上释放 MMA buffer 左边的一半 —— 即左边一半的 256 列，这样便能使得 MMA 可以在左边一半的 buffer 先继续 issue，从而实现尽早让 MMA 可以 issue 起来。不过，在目前这一版设计中，左边的 MMA 哪怕能够先跑起来，也只能跑一个 k tile，之后还是得等待右边一半的 MMA buffer 被释放，然后右边的一半 MMA 也 issue 以后再一起开始一下个 k tile。尽管如此，相比 BN512，这样的设计已经可以让 MMA 的 issue 被提前一点点了。
 
 ### 性能数字
 
-同样测 BK=64/128、GSM=8/12/16 六种选配，测量方法与前面相同。
+这一组我们同样扫了 GSM 8/12/16 与两种 BK，共 6 种选配。三个设计的数字都取自同一个节点，
+三次运行里 cuBLAS 那一列彼此相差都在 0.3% 以内，可以作为对照，说明三张图之间也是可比的。
 
-<Update the chart to draw 7 bars per shape>
-![BN=512 加强版性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/e82edfef82dcc34c253261ced4c29943b7bb5e50/blog/figures/perf-bn512-splitacc.png)
+![BN=512 加强版性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/742c3075c22d009e81cfd37d7a6e96f5c889a180/blog/figures/perf-bn512-splitacc.png)
+
+完整数字见 [blog/perf-data.md](./perf-data.md)。
 
 几点观察：
 
-<This needs to be updated too I guess>
-* 这个设计在 18 个尺寸中有 7 个跑赢了 cuBLAS：8192、9216、10240、11264、13312、18432、19456，其中 10240 上领先 3.1%。作为对比，BN512 基础版赢的尺寸要少一些。
-* BK=64 在绝大部分尺寸上都比 BK=128 快 1% 到 4%，只有到了 17408 以上 BK=128 才反超，在 19456 和 20480 上分别快出 10.2% 和 9.2%。
-* 和前两种设计一样，大尺寸上真正在变的是 BK=64：它在 19456、20480 上掉到 1240 左右，而 BK=128 一直稳定在 1360 附近。
-* 需要说明的是，这一组数字与前两组来自不同的节点，所以三张图之间的绝对值不宜直接比较，每张图内部的性能数字之间才是可比的。
+* 最好的一档是 BK=128 + GSM=16，它在 18 个尺寸中有 10 个跑赢了 cuBLAS，20480 上达到 1472。
+* GSM 对 BK=64 的影响在大尺寸上尤其明显：20480 上从 GSM=8 的 1296 涨到 GSM=16 的 1365。GSM 决定的正是相邻 CTA 之间共享哪些 tile，所以这个趋势指向 L2 的复用效率 —— 尺寸越大、工作集越超出 L2，swizzle 的深度就越关键。
+* 但 GSM 并不是越大越好：再加深到 20，多数尺寸上都不如 16，BK=64 在 20480 上反而从 1365 掉回 1330。16 附近就是这个设计的拐点。
+* 大尺寸上这一档很稳：BK=128 从 15360 到 20480 一直在 1450 上下，而 BN256 的对应曲线只有 1290 左右。第二种设计在这个区间与它基本持平，splitacc 主要是把 BK=64 那一侧拉得更齐。
 
 ## 工具
 在 Meshy 我们开发了以下两个与此话题相关的工具：
