@@ -32,18 +32,50 @@ RAW = re.compile(r"https://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+/(.+)")
 BLOB = "https://github.com/tongzhou8086/mmc/blob/main/"
 
 CSS = """
-:root { color-scheme: light dark; }
+:root { color-scheme: light dark; --toc: 17rem; --rule: #e3e7ec; }
 body {
-  margin: 0 auto; padding: 3rem 1.5rem 6rem; max-width: 46rem;
+  margin: 0; padding: 0;
   font: 16px/1.85 system-ui, -apple-system, "Segoe UI", "PingFang SC",
         "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   color: #1f2933; background: #fff;
   -webkit-text-size-adjust: 100%;
 }
+main { margin: 0 auto; padding: 3rem 1.5rem 6rem; max-width: 46rem; }
+/* sidebar: fixed on wide screens, a collapsible block above the post below the
+   breakpoint. The breakpoint is where the sidebar plus the 46rem column stop
+   fitting side by side without squeezing the text. */
+#toc { font-size: .875rem; line-height: 1.5; }
+#toc h2 { font-size: .75rem; letter-spacing: .08em; text-transform: uppercase;
+          color: #6b7684; margin: 0 0 .75rem; border: 0; padding: 0; }
+#toc ol { list-style: none; margin: 0; padding: 0; }
+#toc li { margin: 0; }
+#toc a { display: block; padding: .3rem .6rem; border-left: 2px solid var(--rule);
+         color: #52606d; text-decoration: none; }
+#toc a:hover { color: #1f2933; background: #f2f4f7; }
+#toc .lvl3 a { padding-left: 1.5rem; font-size: .95em; }
+#toc a.active { color: #2b6cb0; border-left-color: #2b6cb0; font-weight: 600; }
+@media (min-width: 68rem) {
+  #toc { position: fixed; top: 0; left: 0; width: var(--toc); height: 100vh;
+         overflow-y: auto; padding: 3rem 1rem; box-sizing: border-box;
+         border-right: 1px solid var(--rule); }
+  #toc summary { display: none; }
+  /* pad the body, not main: main keeps its own auto margins so the column
+     stays centred in whatever space is left of the sidebar */
+  body { padding-left: var(--toc); }
+}
+@media (max-width: 67.999rem) {
+  #toc { margin: 1.5rem 1.5rem 0; padding: .75rem 1rem;
+         border: 1px solid var(--rule); border-radius: 6px; }
+  #toc summary { cursor: pointer; font-weight: 600; }
+  #toc > h2 { display: none; }
+  #toc ol { margin-top: .75rem; }
+  main { padding-top: 1.5rem; }
+}
 h1 { font-size: 1.9rem; line-height: 1.35; margin: 0 0 1.5rem; }
 h2 { font-size: 1.4rem; margin: 3rem 0 1rem; padding-top: 1rem;
      border-top: 1px solid #e3e7ec; }
 h3 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
+h2, h3 { scroll-margin-top: 1.5rem; }
 p, li { overflow-wrap: break-word; }
 ul { padding-left: 1.4rem; }
 li { margin: .35rem 0; }
@@ -62,7 +94,12 @@ figure { margin: 2rem 0; }
 figcaption { text-align: center; font-size: .85rem; color: #6b7684; }
 .math { overflow-x: auto; margin: 1.5rem 0; text-align: center; }
 @media (prefers-color-scheme: dark) {
+  :root { --rule: #2c3238; }
   body { color: #dfe3e8; background: #16191d; }
+  #toc h2 { color: #99a2ad; }
+  #toc a { color: #b4bcc6; }
+  #toc a:hover { color: #fff; background: #23282e; }
+  #toc a.active { color: #7cb0e0; border-left-color: #7cb0e0; }
   h2 { border-top-color: #2c3238; }
   a { color: #7cb0e0; }
   code { background: #23282e; }
@@ -125,7 +162,7 @@ def inline_md(text):
     return "".join(parts)
 
 
-def convert(md, inlined):
+def convert(md, inlined, toc):
     body, lines, i = [], md.split("\n"), 0
     # links are resolved before escaping, so URLs survive inline_md untouched
     while i < len(lines):
@@ -165,8 +202,13 @@ def convert(md, inlined):
 
         m = re.match(r"(#{1,4})\s+(.*)", stripped)
         if m:
-            lvl = len(m.group(1))
-            body.append(f"<h{lvl}>{inline_md(m.group(2))}</h{lvl}>")
+            lvl, text = len(m.group(1)), inline_md(m.group(2))
+            if lvl in (2, 3):     # h2/h3 are what the sidebar navigates to
+                anchor = f"sec-{len(toc) + 1}"
+                toc.append((lvl, anchor, text))
+                body.append(f'<h{lvl} id="{anchor}">{text}</h{lvl}>')
+            else:
+                body.append(f"<h{lvl}>{text}</h{lvl}>")
             i += 1
             continue
 
@@ -202,22 +244,65 @@ def _resolve_links(text, inlined):
                   + m.group(3), text)
 
 
+def render_toc(toc):
+    """The sidebar. A <details> so it can collapse on narrow screens, open by
+    default so it is a plain sidebar everywhere else."""
+    items = "".join(
+        f'<li class="lvl{lvl}"><a href="#{anchor}">{text}</a></li>'
+        for lvl, anchor, text in toc)
+    return ('<details id="toc" open><summary>目录</summary>'
+            "<h2>目录</h2><ol>" + items + "</ol></details>")
+
+
+# highlight whichever section heading is nearest above the top of the viewport,
+# and keep that entry scrolled into view in a long sidebar
+SPY = """
+document.addEventListener("DOMContentLoaded", function () {
+  var links = [].slice.call(document.querySelectorAll("#toc a"));
+  var heads = links.map(function (a) {
+    return document.getElementById(a.getAttribute("href").slice(1));
+  });
+  var current = null;
+  function update() {
+    var i = 0;
+    for (var j = 0; j < heads.length; j++) {
+      if (heads[j] && heads[j].getBoundingClientRect().top <= 80) i = j;
+    }
+    if (links[i] === current) return;
+    if (current) current.classList.remove("active");
+    current = links[i];
+    if (!current) return;
+    current.classList.add("active");
+    var box = document.getElementById("toc");
+    if (getComputedStyle(box).position === "fixed") {
+      var t = current.offsetTop - box.clientHeight / 2;
+      box.scrollTo({ top: t > 0 ? t : 0, behavior: "smooth" });
+    }
+  }
+  addEventListener("scroll", update, { passive: true });
+  update();
+});
+"""
+
+
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUT
     md = POST.read_text()
     title = re.match(r"#\s+(.*)", md.split("\n")[0]).group(1)
-    inlined = []
-    body = convert(md, inlined)
+    inlined, toc = [], []
+    body = convert(md, inlined, toc)
     page = (
         "<!doctype html>\n<html lang=zh>\n<head>\n<meta charset=utf-8>\n"
         '<meta name=viewport content="width=device-width,initial-scale=1">\n'
         f"<title>{html.escape(title)}</title>\n<style>{CSS}</style>\n"
         f"<script>{MATHJAX}</script>\n"
         '<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/'
-        'tex-mml-chtml.js"></script>\n</head>\n<body>\n'
-        + body + "\n</body>\n</html>\n")
+        'tex-mml-chtml.js"></script>\n'
+        f"<script>{SPY}</script>\n</head>\n<body>\n"
+        + render_toc(toc) + "\n<main>\n" + body
+        + "\n</main>\n</body>\n</html>\n")
     out.write_text(page)
-    print(f"inlined {len(inlined)} figures")
+    print(f"inlined {len(inlined)} figures, {len(toc)} TOC entries")
     print(f"wrote {out} ({len(page) / 1e6:.2f} MB)")
 
 
