@@ -162,3 +162,134 @@ independently, so a column slice of B is `pointer + c0*2`, `global_dim=[w, K]`,
 `global_strides=[N*2]` - the row pitch is unchanged. C slices the same way. So
 the prototype is two launches of kernels already shipped, and 7168 - the largest
 single win available - is fully expressible that way.
+
+## Prototype: two launches, measured
+
+`benchmarks/prototype_adaptive_bn.py` runs the split for real — one launch of
+the BN=512 kernel over `C[:, :N_A]`, one of a narrower kernel over the rest.
+`_bf16_map` grew optional `pitch` / `col_offset` so a column slice is described
+without copying; `Runtime.launch_bf16_slice` launches any registered kernel over
+an N range. Nothing is wired into `mmc.matmul` dispatch.
+
+Node `ip-172-20-60-53`, `do_bench` with 1000/1000 ms:
+
+| shape | split | uniform BN=512 | two launches | modelled | measured |
+|---:|:---|---:|---:|---:|---:|
+| 7168 | 6656 + 512 @ BN=256 | 1298.7 | **1351.3** | +8.1% | **+3.9%** |
+| 20480 | 18944 + 1536 @ BN=256 | 1279.1 | **1312.8** | +0.9% | **+2.6%** |
+| 13312 | 12288 + 1024 @ BN=256 | 1350.7 | **1372.5** | +2.4% | **+1.6%** |
+| 11264 | 10240 + 1024 @ BN=128 | 1328.3 | **1345.1** | +3.6% | +1.2% |
+| 15360 | 13824 + 1536 @ BN=256 | 1347.4 | **1356.0** | +1.7% | +0.6% |
+| 12288 | 11776 + 512 @ BN=128 | **1378.9** | 1366.1 | +0.6% | -0.9% |
+
+**Correctness: max abs error 0 at every shape** — the two launches reproduce
+`torch.matmul` bit-for-bit, so the sliced descriptors are right.
+
+The idea works: gains at 5 of 6 shapes, best +3.9% at 7168, which is the shape
+BN=512 was worst at. But the measured gain is roughly **half** the model, and
+the model's ranking is not reliable — 20480 beat its prediction (+2.6% vs +0.9%)
+while 12288 went slightly negative.
+
+Two costs the model omits, both plausible causes of the shortfall:
+
+- **The tail launch pays its own pipeline ramp.** It fills NS buffers and drains
+  them for a tile column that is only 512-1536 wide, and the model prices the
+  tail purely as fractional-width work.
+- **No overlap between the launches.** Stream ordering means the tail kernel
+  cannot start until the bulk kernel has fully drained, so the drain of the last
+  full wave is exposed rather than hidden.
+
+At 7168 the model predicted saving 45 us and 22 us was realised, so roughly 23 us
+went to those two effects — the right order of magnitude for a ramp plus a hard
+barrier at this K.
+
+4096, 5120 and 6144 are absent because the planner finds no split for them: with
+a BN=512 bulk their tails are 54, 52 and 66 tiles, all past the `2R <= 74` guard,
+so re-tiling still needs two passes. With a BN=256 bulk 5120 becomes feasible
+(R=30) but the model gives +0.1%. These are precisely the shapes two launches
+cannot help, and only a fused rebalance could.
+
+Caveats: one run per configuration, so the sub-1% entries are inside run-to-run
+noise; and the bulk kernel here is `bf16-single-ns4-store2-bk64-bn512` at GSM=8
+and BK=64, not the BK=128 / GSM=16 configuration that wins in the main sweep
+(~1470 vs the ~1300 baseline here). Wave quantization does not depend on BK or
+GSM, so the model is unchanged, but the measured gain should shift: a faster
+bulk makes the tail's fixed ramp relatively more expensive, and splitting N
+changes `grid_n`, which changes what the GSM swizzle keeps in L2. Re-running
+against the tuned bulk is the open item.
+
+Where this leaves the idea: a fused in-kernel tail would avoid both omitted
+costs — no second ramp, no barrier — so the gap between +3.9% and +8.1% is
+roughly what fusing is worth at 7168. That is the case for building it, and
+these numbers are the baseline to beat.
+
+## Re-run against the tuned bulk (BK=128, GSM=16)
+
+`--tuned` swaps in the configuration that wins the blog sweep. The BN=128 rung
+did not exist at that config, so `bf16-double-ns4-store2-bk128-bn128-gsm16` was
+built for it (NS=4, 230400 bytes, 87 registers, no spills). None of the three
+tuned kernels is registered as an autotune candidate; the prototype synthesizes
+their specs, so `_kernels.py` is untouched.
+
+Same node, same method. Max abs error 0 at every shape again.
+
+| shape | tail | uniform | split | measured (tuned) | measured (BK=64/GSM=8) | modelled |
+|---:|:---|---:|---:|---:|---:|---:|
+| 7168 | BN=256 | 1306.5 | **1359.9** | **+3.9%** | +3.9% | +8.1% |
+| 13312 | BN=256 | 1383.2 | 1393.7 | +0.8% | +1.6% | +2.4% |
+| 20480 | BN=256 | 1416.7 | 1417.0 | +0.0% | +2.6% | +0.9% |
+| 15360 | BN=256 | 1406.9 | 1405.4 | -0.1% | +0.6% | +1.7% |
+| 11264 | BN=128 | 1370.6 | 1369.2 | -0.1% | +1.2% | +3.6% |
+| 12288 | BN=128 | 1404.1 | 1397.0 | -0.5% | -0.9% | +0.6% |
+
+**The gains mostly evaporate — except at 7168, which is unchanged at +3.9%.**
+
+The reason is visible in the uniform column: tuning lifts the baseline by a lot
+where the split used to help. 20480 goes 1279 -> 1417, 11264 goes 1328 -> 1371,
+15360 goes 1347 -> 1407. BK=128 and GSM=16 were already recovering most of what
+the split was recovering, which fits the earlier finding that GSM's payoff grows
+with shape: both mechanisms are chasing the same idle-SM time at the tail of a
+large problem, so they do not add.
+
+7168 is the exception because its loss is not GSM-shaped. BN=512 has 88.3% wave
+efficiency there - the worst on the board - and no amount of swizzle tuning
+fills a half-empty final wave. Only changing the tile width does. After the
+split it reaches 1359.9 against torch's 1380.1, closing most of a gap that was
+5.7% before.
+
+**Conclusion: the split-N tail is a targeted fix, not a general one.** It is
+worth applying where wave quantization is both large and not already addressed
+by BK/GSM tuning, which on this shape set means 7168 alone. Any future work on
+the fused in-kernel version should be justified by that shape class, not by the
+mean over a sweep - and the honest headline is +3.9% on one shape in eighteen.
+
+## Against the right baseline: 7168 measured against every design
+
+The runs above compare the split to a *uniform BN=512* bulk. At 7168 that is not
+the kernel anyone would run: BN=256 has 96.3% wave efficiency there against
+BN=512's 88.3%, so the autotuner picks BN=256. Measured on one node in one
+process (`--compare`), with cuBLAS as the cross-node control:
+
+| kernel | TFLOP/s | % of cuBLAS |
+|:---|---:|---:|
+| **two-launch split** (BN=512 bulk + BN=256 tail, BK=128 GSM=16) | **1361.3** | **98.6%** |
+| `bf16-double-ns6-store2-bk64` (BN=256) | 1343.9 | 97.3% |
+| `bf16-double-ns3-store2-bk128` (BN=256) | 1336.1 | 96.7% |
+| uniform BN=512 BK=128 GSM=16 (the bulk alone) | 1315.4 | 95.2% |
+| `...-bk64-bn512-load256-w8-splitacc` (design 3) | 1313.7 | 95.1% |
+| `...-bk128-bn512-load256-w8-splitacc` (design 3) | 1290.8 | 93.5% |
+| `torch.matmul` | 1381.2 | 100% |
+
+Ratios to cuBLAS travel between nodes, which is what makes this comparable to
+the blog: BN=256 BK=64 is 97.3% here against 96.9% in the blog's sweep, and the
+plain BN=512 BK=128 GSM=16 is 95.2% here against 94.2% there — both within a
+point.
+
+**So the gain is +1.3% over the best existing kernel at this shape, not the
++3.9% quoted against the BN=512 bulk.** Switching the whole matrix to BN=256
+already recovers most of 7168's quantization loss; the split adds a little on
+top of that. Stated against the blog: 98.6% of cuBLAS versus 96.9% for the best
+configuration currently in the post, so **+1.7 points at one shape out of
+eighteen**.
+
+That is the number any future fused implementation should be measured against.
