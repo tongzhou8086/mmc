@@ -79,9 +79,9 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 图上每一行是一种操作，箭头从左到右，时间也是从左到右 —— 下一行的起点，就是上一行结束的时刻。两行之间的竖直虚线表示的正是 buffer 的状态变化：上一个操作刚刚把它填满，于是同一个 buffer 到了下一行就成了下一个操作的源。一个箭头的起点表示操作的开始，终点则表示操作完成，所以箭头的终点也会代表对应 buffer 的状态。譬如，TMA load 箭头的终点则表示对应的 TMA buffer 状态变为“可读”，即 TMA load 操作已完成；与此同时，一种操作的结束也代表其源 buffer 的状态变为“可写”。譬如 MMA 箭头的终点代表一次 BK tile 的 MMA 操作完成，假设 K=BK，这时便会有两个Buffer 的状态都会改变：目的 Buffer 状态变为“可读”，以及源 Buffer 状态变为“可写” —— 数据既然已被消费完毕，那源 Buffer 当然就可以重新写入新的数据喽。
 
-另外，这张图上看不到的部分还包括，它只画出了一个操作能开始的条件之一，即源 Buffer 可读，另一个条件，即目的 Buffer 可写，图上是看不出来的。举个例子，假如一次 MMA 操作进行之前，哪怕对应的 TMA load 操作已经完成，若是将要被写入的 MMA buffer 目前状态并不可写，那 MMA 操作也无法被 issue。我们用下面这张图来表示这种情况，注意 MMA 那一行开头的那段 gap —— 竖直虚线标出的是 TMA load 完成、TMA buffer 变为可读的那一刻，但 MMA 并不能从这一刻就开始，它还要再等一段时间：
+另外，这张图上看不到的部分还包括，它只画出了一个操作能开始的条件之一，即源 Buffer 可读，另一个条件，即目的 Buffer 可写，图上是看不出来的。举个例子，假如一次 MMA 操作进行之前，哪怕对应的 TMA load 操作已经完成，若是将要被写入的 MMA buffer 目前状态并不可写，譬如前序的 output tile 还没有完成 draining，那 MMA 操作也无法被 issue —— MMA buffer 还没有被释放呢。我们用下面这张图来表示这种情况，注意 MMA 那一行开头的那段 gap —— 竖直虚线标出的是 TMA load 完成、TMA buffer 变为可读的那一刻，但 MMA 并不能从这一刻就开始，它还要等待 MMA buffer 的释放：
 
-![同一个 tile，出现了 stall](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/pipeline-timeline-stall.png)
+![如果前序的 output tile 的 draining 还未完成，MMA 的 issue 则需要等待 MMA buffer 的释放](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/pipeline-timeline-stall.png)
 
 ### 减少 MMA issue 的 stall
 流水线调度设计的根本主旨是减少 MMA issue 的 stall。
