@@ -94,3 +94,67 @@ always a multiple of `ceil(M/256)` — 16 at 4096 — so it cannot isolate the
 `N_A = 0`, i.e. it degenerates to uniform BN=128, which reaches the same
 3.5 / 5.5 tile-times as the ideal tail split. Hence uniform BN=128 was the
 cheaper way to measure the same thing.
+
+## The general form: BN as a per-wave choice
+
+The narrow version above pairs one bulk width with one tail width. The general
+statement is that **BN need not be constant across the grid at all**: use the
+widest tile where throughput dominates (the bulk, where arithmetic intensity is
+everything) and the finest where balance dominates (the tail, a few percent of
+the work, where granularity is everything). Those two pressures want opposite
+things and they act on disjoint parts of the execution, so there is no reason
+one BN should serve both.
+
+The ladder is cheap at the top and expensive at the bottom. Relative per-tile
+efficiency, taking BN=512 as 1.0: BN=256 is ~0.97 (AI 128 vs 171), BN=128 is
+~0.835 (the 14% penalty measured above, compounded). So descending one rung is
+nearly free and descending two is not.
+
+Hanging the ladder off BN=512 — the design that actually wins at large shapes —
+gains at 12 of 18 shapes, mean 2.1%:
+
+| shape | tail tiles | best tail width | gain |
+|---:|---:|---:|---:|
+| 7168 | 22 | BN=256 | **+8.1%** |
+| 4096 | 54 | BN=128 | +5.1% |
+| 11264 | 6 | BN=128 | +5.0% |
+| 5120 | 52 | BN=128 | +3.4% |
+| 14336 | 14 | BN=128 | +3.2% |
+| 13312 | 20 | BN=256 | +2.6% |
+| 15360 | 24 | BN=256 | +1.9% |
+| 3072, 6144, 8192, 9216, 10240 | 66-72 | - | 0% |
+
+Two things this shows that the BN=256/128 pairing does not:
+
+- **7168 is fixed by a BN=256 tail, not a BN=128 one.** It was BN=512's worst
+  shape (88.3% wave efficiency); one rung down recovers 8.1% without paying the
+  BN=128 penalty. Roughly half the shapes want a 256 tail and half want 128,
+  which is precisely the part that has to be dynamic.
+- **It applies on top of the winning design.** The BN=256 + BN=128 pairing sits
+  under design 1, which loses to cuBLAS at every shape; BN=512 + a tail rung
+  sits under the design that wins.
+
+The fully general form lets the last wave itself be mixed-width - some 256 and
+some 128 tiles chosen to fill exactly 74 clusters. That turns the whole thing
+into a small makespan minimization over tile widths, and the `2R <= 74` guard
+stops being a special case: it falls out of the optimization.
+
+### Two launches capture part of this with no new CUDA
+
+A second kernel launch can only carve rectangles, so it cannot express an
+arbitrary tail. But against a BN=512 bulk it does better than expected:
+
+| shape | baseline | ideal | two launches | split | fraction of ideal captured |
+|---:|---:|---:|---:|---:|---:|
+| 7168 | 6.00 | 5.52 | **5.52** | N_A=6656, tail BN=256 | **100%** |
+| 12288 | 16.00 | 15.90 | 15.90 | N_A=11776, tail BN=128 | 100% |
+| 13312 | 19.00 | 18.52 | 18.55 | N_A=12288, tail BN=256 | 94% |
+| 15360 | 25.00 | 24.52 | 24.58 | N_A=13824, tail BN=256 | 87% |
+| 11264 | 14.00 | 13.30 | 13.50 | N_A=10240, tail BN=128 | 72% |
+| 4096, 5120, 16384, 18432 | - | - | no gain | - | 0% |
+
+It needs no kernel changes: `_bf16_map` takes `global_dim` and `global_strides`
+independently, so a column slice of B is `pointer + c0*2`, `global_dim=[w, K]`,
+`global_strides=[N*2]` - the row pitch is unchanged. C slices the same way. So
+the prototype is two launches of kernels already shipped, and 7168 - the largest
+single win available - is fully expressible that way.
