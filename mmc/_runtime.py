@@ -106,7 +106,8 @@ def _value_map(tensor, rows, cols, tile_rows, tile_cols, element_bytes, dtype):
     )
 
 
-def _bf16_map(tensor, rows, cols, box_rows, box_cols):
+def _bf16_map(tensor, rows, cols, box_rows, box_cols, pitch=None,
+              col_offset=0):
     """Rank-2 128B-swizzled BF16 map over a row-major [rows, cols] tensor.
 
     cuTensorMapEncodeTiled takes dimensions innermost-first, so a row-major
@@ -116,12 +117,15 @@ def _bf16_map(tensor, rows, cols, box_rows, box_cols):
     plain rank-2 form the kernel was written against.
     """
     element_bytes = 2
+    # A column slice keeps its parent's row pitch: pass `pitch` (the parent's
+    # column count) and `col_offset` to describe tensor[:, col_offset:][:, :cols]
+    # without copying. Defaults reproduce the whole-tensor descriptor exactly.
     return _tensor_map(
         dtype=TMA_BFLOAT16,
         rank=2,
-        pointer=tensor.data_ptr(),
+        pointer=tensor.data_ptr() + col_offset * element_bytes,
         global_dim=[cols, rows],
-        global_strides=[cols * element_bytes],
+        global_strides=[(pitch if pitch is not None else cols) * element_bytes],
         box_dim=[box_cols, box_rows],
         swizzle=TMA_SWIZZLE_128B,
     )
@@ -289,9 +293,11 @@ class Runtime:
         # kernel_params contains addresses into argument_storage, so retain both.
         return launch_args, argument_storage
 
-    def _build_bf16_launch_args(self, spec, a, b, out, stream):
+    def _build_bf16_launch_args(self, spec, a, b, out, stream,
+                                n_offset=0, n_width=None):
         m, k = a.shape
-        n = b.shape[1]
+        pitch = b.shape[1]
+        n = pitch if n_width is None else n_width
         bf16_swizzle_elements = 128 // 2
         # The BF16 kernels take three rank-2 descriptors: A[M,K] tiled BM x BK,
         # B[K,N] tiled BK x one 128B swizzle group (64 BF16 columns), and C[M,N]
@@ -302,12 +308,14 @@ class Runtime:
             # bytes. A BK>64 kernel therefore fetches A as BK/64 chunks. For
             # BK=64 this is the same descriptor as before.
             _bf16_map(a, m, k, BM, bf16_swizzle_elements),
-            _bf16_map(b, k, n, spec.bk, bf16_swizzle_elements),
-            _bf16_map(out, m, n, BM, STORE_N),
+            _bf16_map(b, k, n, spec.bk, bf16_swizzle_elements,
+                      pitch=pitch, col_offset=n_offset),
+            _bf16_map(out, m, n, BM, STORE_N,
+                      pitch=pitch, col_offset=n_offset),
         )
         argument_storage = [_by_value(descriptor) for descriptor in descriptors]
         argument_storage.extend([
-            ctypes.c_void_p(out.data_ptr()),
+            ctypes.c_void_p(out.data_ptr() + n_offset * 2),
             ctypes.c_int(m),
             ctypes.c_int(n),
             ctypes.c_int(k),
@@ -360,6 +368,27 @@ class Runtime:
                 spec, a, b, out, stream
             )
 
+        launch_args, _argument_storage = self._bf16_launch_cache[key]
+        _cu(driver.cuLaunchKernel(*launch_args))
+
+    def launch_bf16_slice(self, spec, a, b, out, n_offset, n_width):
+        """Compute out[:, n_offset:n_offset+n_width] over B's matching columns.
+
+        The slice keeps B's and C's row pitch, so no copy is involved: this is
+        the same kernel writing a vertical stripe of the same output tensor.
+        Used by the adaptive-BN prototype, which covers one N range with a wide
+        kernel and the remainder with a narrower one.
+        """
+        if spec.backend != "cuda":
+            raise RuntimeError(f"{spec.name}: slice launch needs a CUDA kernel")
+        m, k = a.shape
+        stream = torch.cuda.current_stream(self.device_index).cuda_stream
+        key = (spec.name, a.data_ptr(), b.data_ptr(), out.data_ptr(),
+               m, n_offset, n_width, k, stream, "slice")
+        if key not in self._bf16_launch_cache:
+            self._bf16_launch_cache[key] = self._build_bf16_launch_args(
+                spec, a, b, out, stream, n_offset=n_offset, n_width=n_width
+            )
         launch_args, _argument_storage = self._bf16_launch_cache[key]
         _cu(driver.cuLaunchKernel(*launch_args))
 

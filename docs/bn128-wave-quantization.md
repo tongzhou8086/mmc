@@ -162,3 +162,52 @@ independently, so a column slice of B is `pointer + c0*2`, `global_dim=[w, K]`,
 `global_strides=[N*2]` - the row pitch is unchanged. C slices the same way. So
 the prototype is two launches of kernels already shipped, and 7168 - the largest
 single win available - is fully expressible that way.
+
+## Prototype: two launches, measured
+
+`benchmarks/prototype_adaptive_bn.py` runs the split for real — one launch of
+the BN=512 kernel over `C[:, :N_A]`, one of a narrower kernel over the rest.
+`_bf16_map` grew optional `pitch` / `col_offset` so a column slice is described
+without copying; `Runtime.launch_bf16_slice` launches any registered kernel over
+an N range. Nothing is wired into `mmc.matmul` dispatch.
+
+Node `ip-172-20-60-53`, `do_bench` with 1000/1000 ms:
+
+| shape | split | uniform BN=512 | two launches | modelled | measured |
+|---:|:---|---:|---:|---:|---:|
+| 7168 | 6656 + 512 @ BN=256 | 1298.7 | **1351.3** | +8.1% | **+3.9%** |
+| 20480 | 18944 + 1536 @ BN=256 | 1279.1 | **1312.8** | +0.9% | **+2.6%** |
+| 13312 | 12288 + 1024 @ BN=256 | 1350.7 | **1372.5** | +2.4% | **+1.6%** |
+| 11264 | 10240 + 1024 @ BN=128 | 1328.3 | **1345.1** | +3.6% | +1.2% |
+| 15360 | 13824 + 1536 @ BN=256 | 1347.4 | **1356.0** | +1.7% | +0.6% |
+| 12288 | 11776 + 512 @ BN=128 | **1378.9** | 1366.1 | +0.6% | -0.9% |
+
+**Correctness: max abs error 0 at every shape** — the two launches reproduce
+`torch.matmul` bit-for-bit, so the sliced descriptors are right.
+
+The idea works: gains at 5 of 6 shapes, best +3.9% at 7168, which is the shape
+BN=512 was worst at. But the measured gain is roughly **half** the model, and
+the model's ranking is not reliable — 20480 beat its prediction (+2.6% vs +0.9%)
+while 12288 went slightly negative.
+
+Two costs the model omits, both plausible causes of the shortfall:
+
+- **The tail launch pays its own pipeline ramp.** It fills NS buffers and drains
+  them for a tile column that is only 512-1536 wide, and the model prices the
+  tail purely as fractional-width work.
+- **No overlap between the launches.** Stream ordering means the tail kernel
+  cannot start until the bulk kernel has fully drained, so the drain of the last
+  full wave is exposed rather than hidden.
+
+At 7168 the model predicted saving 45 us and 22 us was realised, so roughly 23 us
+went to those two effects — the right order of magnitude for a ramp plus a hard
+barrier at this K.
+
+Caveats: one run per configuration, so the sub-1% entries are inside run-to-run
+noise; and the bulk kernel here is `bf16-single-ns4-store2-bk64-bn512` at GSM=8,
+not the splitacc/GSM=16 configuration that wins in the main sweep.
+
+Where this leaves the idea: a fused in-kernel tail would avoid both omitted
+costs — no second ramp, no barrier — so the gap between +3.9% and +8.1% is
+roughly what fusing is worth at 7168. That is the case for building it, and
+these numbers are the baseline to beat.
