@@ -86,14 +86,18 @@ already run one N=256 MMA plus one N=128 MMA per K step, and `-splitacc2`
 aligns its epilogue to those N groups. The narrower MMA plus matching epilogue
 path a tail split needs is therefore already solved on the MXFP8 side.
 
-## Why a two-kernel prototype was not used
+## Why a two-kernel prototype was not used *for this measurement*
 
 A second launch can only carve rectangles, and a rectangle's tile count is
 always a multiple of `ceil(M/256)` — 16 at 4096 — so it cannot isolate the
-34-tile tail. Optimizing over every rectangle split at 4096 and 5120 returns
-`N_A = 0`, i.e. it degenerates to uniform BN=128, which reaches the same
-3.5 / 5.5 tile-times as the ideal tail split. Hence uniform BN=128 was the
-cheaper way to measure the same thing.
+34-tile tail. Optimizing over every rectangle split at 4096 and 5120 with a
+BN=256 bulk returns `N_A = 0`, i.e. it degenerates to uniform BN=128, which
+reaches the same 3.5 / 5.5 tile-times as the ideal tail split. Hence uniform
+BN=128 was the cheaper way to measure the same thing.
+
+This is a statement about these two shapes with a BN=256 bulk, not about two-
+kernel splits in general: against a BN=512 bulk they capture the full ideal at
+7168 and 12288. See the last section.
 
 ## The general form: BN as a per-wave choice
 
