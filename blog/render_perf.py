@@ -48,6 +48,19 @@ SERIES_GSM = [
 ]
 
 
+# The hybrid tables sweep GSM 8/12/16 only - GSM=20 was already ruled out - so
+# they carry 6 configurations instead of 8 and need their own column mapping.
+SERIES_HYBRID = [
+    ("torch.matmul (cuBLAS)", "#b7bfc9", 7),
+    ("BK=64  GSM=8", "#c3d3e2", 1),
+    ("BK=64  GSM=12", "#8babc8", 2),
+    ("BK=64  GSM=16", "#4f7396", 3),
+    ("BK=128  GSM=8", "#b3d2b7", 4),
+    ("BK=128  GSM=12", "#7aa881", 5),
+    ("BK=128  GSM=16", "#41704a", 6),
+]
+
+
 def read_rows(heading, ncols=3):
     """Rows under a heading as (shape, v1, ..., vn).
 
@@ -127,6 +140,10 @@ def main():
               "BN=512 splitacc · GSM sweep, both BK settings",
               OUTDIR / "perf-bn512-splitacc",
               series=SERIES_GSM, figsize=(14.2, 5.4))
+    bar_chart(read_rows("## BN=512 splitacc + 自适应尾波", ncols=7),
+              "BN=512 splitacc + adaptive tail · GSM sweep, both BK settings",
+              OUTDIR / "perf-bn512-hybrid",
+              series=SERIES_HYBRID, figsize=(14.2, 5.4))
 
 
 if __name__ == "__main__":
