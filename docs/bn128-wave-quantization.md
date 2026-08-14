@@ -203,9 +203,20 @@ At 7168 the model predicted saving 45 us and 22 us was realised, so roughly 23 u
 went to those two effects — the right order of magnitude for a ramp plus a hard
 barrier at this K.
 
+4096, 5120 and 6144 are absent because the planner finds no split for them: with
+a BN=512 bulk their tails are 54, 52 and 66 tiles, all past the `2R <= 74` guard,
+so re-tiling still needs two passes. With a BN=256 bulk 5120 becomes feasible
+(R=30) but the model gives +0.1%. These are precisely the shapes two launches
+cannot help, and only a fused rebalance could.
+
 Caveats: one run per configuration, so the sub-1% entries are inside run-to-run
-noise; and the bulk kernel here is `bf16-single-ns4-store2-bk64-bn512` at GSM=8,
-not the splitacc/GSM=16 configuration that wins in the main sweep.
+noise; and the bulk kernel here is `bf16-single-ns4-store2-bk64-bn512` at GSM=8
+and BK=64, not the BK=128 / GSM=16 configuration that wins in the main sweep
+(~1470 vs the ~1300 baseline here). Wave quantization does not depend on BK or
+GSM, so the model is unchanged, but the measured gain should shift: a faster
+bulk makes the tail's fixed ramp relatively more expensive, and splitting N
+changes `grid_n`, which changes what the GSM swizzle keeps in L2. Re-running
+against the tuned bulk is the open item.
 
 Where this leaves the idea: a fused in-kernel tail would avoid both omitted
 costs — no second ramp, no barrier — so the gap between +3.9% and +8.1% is
