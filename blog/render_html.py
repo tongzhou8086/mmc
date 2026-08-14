@@ -2,11 +2,10 @@
 
     python blog/render_html.py [out.html]
 
-The page inlines its CSS and every local figure (as a data: URI), so it can be
-served from anywhere without the repo alongside it. Two things stay external:
-the GitHub user-attachment image in the background section, and MathJax for the
-one display equation - if MathJax cannot be reached the equation degrades to
-readable TeX rather than breaking the page.
+The page inlines its CSS and every figure (as a data: URI), so it can be served
+from anywhere without the repo alongside it. The only external request left is
+MathJax for the one display equation - if it cannot be reached the equation
+degrades to readable TeX rather than breaking the page.
 
 Only the Markdown subset the post actually uses is supported: headings, bullet
 lists, fenced code, images, links, bold, inline code, $$-delimited display math,
