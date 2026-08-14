@@ -262,3 +262,34 @@ worth applying where wave quantization is both large and not already addressed
 by BK/GSM tuning, which on this shape set means 7168 alone. Any future work on
 the fused in-kernel version should be justified by that shape class, not by the
 mean over a sweep - and the honest headline is +3.9% on one shape in eighteen.
+
+## Against the right baseline: 7168 measured against every design
+
+The runs above compare the split to a *uniform BN=512* bulk. At 7168 that is not
+the kernel anyone would run: BN=256 has 96.3% wave efficiency there against
+BN=512's 88.3%, so the autotuner picks BN=256. Measured on one node in one
+process (`--compare`), with cuBLAS as the cross-node control:
+
+| kernel | TFLOP/s | % of cuBLAS |
+|:---|---:|---:|
+| **two-launch split** (BN=512 bulk + BN=256 tail, BK=128 GSM=16) | **1361.3** | **98.6%** |
+| `bf16-double-ns6-store2-bk64` (BN=256) | 1343.9 | 97.3% |
+| `bf16-double-ns3-store2-bk128` (BN=256) | 1336.1 | 96.7% |
+| uniform BN=512 BK=128 GSM=16 (the bulk alone) | 1315.4 | 95.2% |
+| `...-bk64-bn512-load256-w8-splitacc` (design 3) | 1313.7 | 95.1% |
+| `...-bk128-bn512-load256-w8-splitacc` (design 3) | 1290.8 | 93.5% |
+| `torch.matmul` | 1381.2 | 100% |
+
+Ratios to cuBLAS travel between nodes, which is what makes this comparable to
+the blog: BN=256 BK=64 is 97.3% here against 96.9% in the blog's sweep, and the
+plain BN=512 BK=128 GSM=16 is 95.2% here against 94.2% there — both within a
+point.
+
+**So the gain is +1.3% over the best existing kernel at this shape, not the
++3.9% quoted against the BN=512 bulk.** Switching the whole matrix to BN=256
+already recovers most of 7168's quantization loss; the split adds a little on
+top of that. Stated against the blog: 98.6% of cuBLAS versus 96.9% for the best
+configuration currently in the post, so **+1.7 points at one shape out of
+eighteen**.
+
+That is the number any future fused implementation should be measured against.

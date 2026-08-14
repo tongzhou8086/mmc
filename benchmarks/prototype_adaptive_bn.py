@@ -119,6 +119,9 @@ def main():
     ap.add_argument("shapes", nargs="+", type=int, metavar="N",
                     help="square shape (M = N = K)")
     ap.add_argument("--bulk-bn", type=int, default=512, choices=(512, 256))
+    ap.add_argument("--compare", default="",
+                    help="also bench these registered kernels uniformly, "
+                         "comma-separated, as extra baselines")
     ap.add_argument("--tuned", action="store_true",
                     help="use the BK=128 / GSM=16 kernels instead of BK=64 / GSM=8")
     args = ap.parse_args()
@@ -176,6 +179,22 @@ def main():
         measured = (ms_uniform - ms_split) / ms_uniform
         print(f"  measured {measured:+.1%} vs modelled "
               f"{(base - modelled) / base:+.1%}")
+
+        # extra whole-N baselines, so the split is compared against the best
+        # known kernels on this node rather than across runs
+        for name in [x for x in args.compare.split(",") if x]:
+            other = next((k for k in BF16_KERNELS if k.name == name), None)
+            if other is None:
+                print(f"  {name}: not registered, skipped")
+                continue
+            if n % other.n_multiple or m % other.m_multiple:
+                print(f"  {name}: shape not aligned, skipped")
+                continue
+            scratch = torch.empty_like(out)
+            ms = do_bench(lambda: runtime.launch_bf16(other, a, b, scratch),
+                          warmup=1000, rep=1000)
+            print(f"  {name}: {tflops(m, n, k, ms):8.1f} TFLOP/s "
+                  f"(split is {(ms - ms_split) / ms:+.1%} vs this)")
 
 
 if __name__ == "__main__":
