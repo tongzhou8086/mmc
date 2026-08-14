@@ -53,10 +53,10 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
         b_tile = load(B, k, tile.n)          #   BK x BN
         acc += a_tile @ b_tile               #   一次 BK 的部分累加
 
-    store(C, tile.m, tile.n, acc)            # K 维度累加完毕，写回这块 BM x BN 的结果
+    store(C, tile.m, tile.n, acc)            # K 维度累加完毕，写回这块 BM x BN 的结果，又称为 epilogue
 ```
 
-外层循环的每一轮产出一整块 output tile，内层循环的每一轮只推进 BK 这一步 —— 后文所有的流水线设计，本质上都是在给这两层循环里的 load、MMA、写回这几件事重新安排先后顺序和重叠方式，而循环结构本身是不变的。
+外层循环的每一轮产出一整块 output tile，内层循环的每一轮只推进 BK 这一步 —— 后文所有的流水线设计，本质上都是在给这两层循环里的 load、MMA、epilogue 安排先后顺序和重叠方式，而循环结构本身是不变的。
 
 ## 数据流模型
 不论流水线怎么编排，数据流动的总体步骤都是一样的，不同方案的区别在于同步方案、数据读写的粒度、tile sizes 的配置、各种 buffer 的数量等等。为了能把这些区别讲清楚，我们先建立一个数据流模型。
