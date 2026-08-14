@@ -40,9 +40,23 @@ GEMM 程序不是最终会计算出一个 MxN 的矩阵的输出结果嘛，在�
 
 这两层循环用伪代码描述如下：
 
+```text
+num_k = K / BK                               # 每个 output tile 需要多少次 k 迭代
+
+# my_output_tiles：分配给当前 CTA 的那一批 output tile，分配方式见上图
+for tile in my_output_tiles:                 # ── 外层循环：遍历 output tile ──
+
+    acc = zeros(BM, BN)                      # 这个 output tile 的累加器
+
+    for k in range(num_k):                   # ── 内层循环：遍历 k tile ──
+        a_tile = load(A, tile.m, k)          #   BM x BK
+        b_tile = load(B, k, tile.n)          #   BK x BN
+        acc += a_tile @ b_tile               #   一次 BK 的部分累加
+
+    store(C, tile.m, tile.n, acc)            # K 维度累加完毕，写回这块 BM x BN 的结果
 ```
-<add in the pseudocode - clearly show that the outer loop iterates over different output tiles, while the inner loop iterates over k iters>
-```
+
+外层循环的每一轮产出一整块 output tile，内层循环的每一轮只推进 BK 这一步 —— 后文所有的流水线设计，本质上都是在给这两层循环里的 load、MMA、写回这几件事重新安排先后顺序和重叠方式，而循环结构本身是不变的。
 
 ## 数据流模型
 不论流水线怎么编排，数据流动的总体步骤都是一样的，不同方案的区别在于同步方案、数据读写的粒度、tile sizes 的配置、各种 buffer 的数量等等。为了能把这些区别讲清楚，我们先建立一个数据流模型。
