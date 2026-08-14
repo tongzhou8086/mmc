@@ -28,11 +28,15 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 在介绍流水线编排模型之前，我们先放出代码的宏观框架，以便为读者建立一个宏观的认知：我们在编什么程。以 CUDA 编程语言为例，众所周知，在 CUDA 编程中，我们需要指明每个线程的行为，同时一个 CTA 中的线程又能通过 SMEM 协作、交换数据等等。于 GEMM kernel 的表达而言，更加自然的方式是以 CTA 为视角来描述；具体在 CUDA 的层面，则需要再映射为每一个线程的操作。我们的程序框架如下：
 
-GEMM 程序不是最终会计算出一个 MxN 的矩阵的输出结果嘛，在逻辑上我们先把这个输出矩阵按照 BMxBN 的块大小划分，即，划分成
+GEMM 程序不是最终会计算出一个 MxN 的矩阵的输出结果嘛，在逻辑上我们先把这个输出矩阵按照 BMxBN 的块大小划分，即，划分成 M/BM 行和 N/BN 列，每一块的大小是 BMxBN。这样的一个块，我们也将它称为 output tile，计算它对应的输入数据则被称为 input tile 或者 A tile 和 B tile。
 
-首先在逻辑上
+每个 CTA 会计算不止一个 output tile，事实上，它们会使用一个外层循环，在循环里依次计算分配给它们的每个 output，具体 output tiles 是如何分配给 CTA 的，就存在一个分配问题，也就和 CTA swizzle 相关，下图给出了一种可能的分配方式的图示。
 
-对于每一个 CTA，我们根据它的 CTA id 
+<draw a graph that looks like the tiled GEMM one - but assign each output tile to a CTA. Suppose we have 8 CTAs, draw the same output grid, and do the following assignement. output tile (0,0) goes to CTA0, (1,0) goes to CTA1, (2,0) goes to CTA2, (3,0) goes to CTA3, (0,1) goes to CTA4, (1,1) goes to CTA5, (2,1) goes to 6, (3,1) goes to CTA7. Then repeat the same assignemtn for other tiles. We can probably use different colors for different CTAs.>
+
+既然存在一个外层循环用来计算不同的 output tiles，那自然也有个内层循环了。事实上，计算一个 output tile 也不是一步到位的，而是会每次加载一部分的 A tile 和 B tile，即每次加载 BMxBK 的 A 数据，和 BKxBN 的 B 数据 —— 即，一个 BK tile，然后分成 K/BK 步完成计算，这便是内层循环的迭代，我们也称它为 k tile 迭代。
+
+这两层循环用伪代码描述如下：
 
 ## 数据流模型
 不论流水线怎么编排，数据流动的总体步骤都是一样的，不同方案的区别在于同步方案、数据读写的粒度、tile sizes 的配置、各种 buffer 的数量等等。为了能把这些区别讲清楚，我们先建立一个数据流模型。
