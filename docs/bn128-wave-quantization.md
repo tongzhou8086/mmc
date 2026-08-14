@@ -222,3 +222,43 @@ Where this leaves the idea: a fused in-kernel tail would avoid both omitted
 costs — no second ramp, no barrier — so the gap between +3.9% and +8.1% is
 roughly what fusing is worth at 7168. That is the case for building it, and
 these numbers are the baseline to beat.
+
+## Re-run against the tuned bulk (BK=128, GSM=16)
+
+`--tuned` swaps in the configuration that wins the blog sweep. The BN=128 rung
+did not exist at that config, so `bf16-double-ns4-store2-bk128-bn128-gsm16` was
+built for it (NS=4, 230400 bytes, 87 registers, no spills). None of the three
+tuned kernels is registered as an autotune candidate; the prototype synthesizes
+their specs, so `_kernels.py` is untouched.
+
+Same node, same method. Max abs error 0 at every shape again.
+
+| shape | tail | uniform | split | measured (tuned) | measured (BK=64/GSM=8) | modelled |
+|---:|:---|---:|---:|---:|---:|---:|
+| 7168 | BN=256 | 1306.5 | **1359.9** | **+3.9%** | +3.9% | +8.1% |
+| 13312 | BN=256 | 1383.2 | 1393.7 | +0.8% | +1.6% | +2.4% |
+| 20480 | BN=256 | 1416.7 | 1417.0 | +0.0% | +2.6% | +0.9% |
+| 15360 | BN=256 | 1406.9 | 1405.4 | -0.1% | +0.6% | +1.7% |
+| 11264 | BN=128 | 1370.6 | 1369.2 | -0.1% | +1.2% | +3.6% |
+| 12288 | BN=128 | 1404.1 | 1397.0 | -0.5% | -0.9% | +0.6% |
+
+**The gains mostly evaporate — except at 7168, which is unchanged at +3.9%.**
+
+The reason is visible in the uniform column: tuning lifts the baseline by a lot
+where the split used to help. 20480 goes 1279 -> 1417, 11264 goes 1328 -> 1371,
+15360 goes 1347 -> 1407. BK=128 and GSM=16 were already recovering most of what
+the split was recovering, which fits the earlier finding that GSM's payoff grows
+with shape: both mechanisms are chasing the same idle-SM time at the tail of a
+large problem, so they do not add.
+
+7168 is the exception because its loss is not GSM-shaped. BN=512 has 88.3% wave
+efficiency there - the worst on the board - and no amount of swizzle tuning
+fills a half-empty final wave. Only changing the tile width does. After the
+split it reaches 1359.9 against torch's 1380.1, closing most of a gap that was
+5.7% before.
+
+**Conclusion: the split-N tail is a targeted fix, not a general one.** It is
+worth applying where wave quantization is both large and not already addressed
+by BK/GSM tuning, which on this shape set means 7168 alone. Any future work on
+the fused in-kernel version should be justified by that shape class, not by the
+mean over a sweep - and the honest headline is +3.9% on one shape in eighteen.

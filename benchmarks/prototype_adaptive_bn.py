@@ -24,7 +24,7 @@ import torch
 from triton.testing import do_bench
 
 import mmc
-from mmc._kernels import BF16_KERNELS
+from mmc._kernels import BF16_KERNELS, KernelSpec
 from mmc._runtime import runtime_for
 
 BM_CLUSTER = 256                 # one cluster owns a 256 x BN output tile
@@ -33,19 +33,41 @@ RESIDENT = 74                    # 148-CTA persistent grid / 2 CTAs per cluster
 # per-tile efficiency relative to BN=512, measured in docs/bn128-wave-quantization.md
 EFFICIENCY = {512: 1.00, 256: 0.97, 128: 0.835}
 
+# BK=64, GSM=8 - the plain candidates, all registered in _kernels.py
 KERNELS = {
     512: "bf16-single-ns4-store2-bk64-bn512",
     256: "bf16-double-ns6-store2-bk64",
     128: "bf16-double-ns8-store2-bk64-bn128",
 }
 
+# BK=128, GSM=16 - the configuration that wins the blog sweep. These are not
+# registered as autotune candidates (the GSM candidate set is not settled), so
+# their specs are synthesized from the parent kernel below.
+TUNED_KERNELS = {
+    512: "bf16-single-ns2-store2-bk128-bn512-gsm16",
+    256: "bf16-double-ns3-store2-bk128-gsm16",
+    128: "bf16-double-ns4-store2-bk128-bn128-gsm16",
+}
 
-def spec_for(bn):
-    name = KERNELS[bn]
+# name -> (bk, threads, shared_bytes) for kernels that have a cubin but no
+# KernelSpec. The runtime loads cubins by name, so an ad-hoc spec is enough.
+UNREGISTERED = {
+    "bf16-single-ns2-store2-bk128-bn512-gsm16": (128, 256, 230400),
+    "bf16-double-ns3-store2-bk128-gsm16": (128, 256, 230400),
+    "bf16-double-ns4-store2-bk128-bn128-gsm16": (128, 256, 230400),
+}
+
+
+def spec_for(bn, tuned=False):
+    name = (TUNED_KERNELS if tuned else KERNELS)[bn]
     for spec in BF16_KERNELS:
         if spec.name == name:
             return spec
-    raise SystemExit(f"kernel {name} is not registered")
+    if name in UNREGISTERED:
+        bk, threads, shared = UNREGISTERED[name]
+        return KernelSpec(name, bk, threads, shared,
+                          m_multiple=256, n_multiple=bn)
+    raise SystemExit(f"kernel {name} is neither registered nor known here")
 
 
 def waves(tiles):
@@ -97,6 +119,8 @@ def main():
     ap.add_argument("shapes", nargs="+", type=int, metavar="N",
                     help="square shape (M = N = K)")
     ap.add_argument("--bulk-bn", type=int, default=512, choices=(512, 256))
+    ap.add_argument("--tuned", action="store_true",
+                    help="use the BK=128 / GSM=16 kernels instead of BK=64 / GSM=8")
     args = ap.parse_args()
 
     runtime = runtime_for(torch.cuda.current_device())
@@ -115,7 +139,9 @@ def main():
         print(f"  model: {base:.2f} -> {modelled:.2f} tile-times "
               f"({(base - modelled) / base:+.1%})")
 
-        bulk_spec, tail_spec = spec_for(args.bulk_bn), spec_for(tail_bn)
+        bulk_spec = spec_for(args.bulk_bn, args.tuned)
+        tail_spec = spec_for(tail_bn, args.tuned)
+        print(f"  kernels: {bulk_spec.name} + {tail_spec.name}")
         a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
         b = torch.randn(k, n, device="cuda", dtype=torch.bfloat16)
         out = torch.empty(m, n, device="cuda", dtype=torch.bfloat16)
