@@ -57,7 +57,7 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 * stage: 从 tcgen05.ld 读取数据，写入 stage buffer
 * TMA store: 从 stage buffer 读取数据，写入内存
 
-把这 5 种操作逐条列出来，就是下面这张图 —— 每一行是一种操作，箭头两端分别是它读取的源 buffer 和写入的目的 buffer。注意同一个 buffer 会出现两次：它既是上一种操作的目的地，也是下一种操作的源头，把相邻的两行接起来，就是数据流过的完整链条：
+把这 5 种操作逐条列出来，就是下面这张图 —— 每一行是一种操作，箭头两端分别是它读取的源 buffer 和写入的目的 buffer。箭头的起点表示操作开始，**终点则表示操作完成**，也就是说数据要到箭头的终点才真正落在目的 buffer 里。注意同一个 buffer 会出现两次：它既是上一种操作的目的地，也是下一种操作的源头，把相邻的两行接起来，就是数据流过的完整链条：
 
 ![5 种操作及其源和目的 buffer](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/operations-chain.png)
 
