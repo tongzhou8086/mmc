@@ -40,6 +40,10 @@ GEMM 程序不是最终会计算出一个 MxN 的矩阵的输出结果嘛，在�
 
 这两层循环用伪代码描述如下：
 
+```
+<add in the pseudocode - clearly show that the outer loop iterates over different output tiles, while the inner loop iterates over k iters>
+```
+
 ## 数据流模型
 不论流水线怎么编排，数据流动的总体步骤都是一样的，不同方案的区别在于同步方案、数据读写的粒度、tile sizes 的配置、各种 buffer 的数量等等。为了能把这些区别讲清楚，我们先建立一个数据流模型。
 
