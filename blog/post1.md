@@ -32,7 +32,9 @@ GEMM 程序不是最终会计算出一个 MxN 的矩阵的输出结果嘛，在�
 
 每个 CTA 会计算不止一个 output tile，事实上，它们会使用一个外层循环，在循环里依次计算分配给它们的每个 output，具体 output tiles 是如何分配给 CTA 的，就存在一个分配问题，也就和 CTA swizzle 相关，下图给出了一种可能的分配方式的图示。
 
-<draw a graph that looks like the tiled GEMM one - but assign each output tile to a CTA. Suppose we have 8 CTAs, draw the same output grid, and do the following assignement. output tile (0,0) goes to CTA0, (1,0) goes to CTA1, (2,0) goes to CTA2, (3,0) goes to CTA3, (0,1) goes to CTA4, (1,1) goes to CTA5, (2,1) goes to 6, (3,1) goes to CTA7. Then repeat the same assignemtn for other tiles. We can probably use different colors for different CTAs.>
+![8 个 CTA 与 output tile 的一种分配方式](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/cta-assignment.png)
+
+上图中一共 8 个 CTA，分配的顺序是先沿着一列往下走完 4 个 tile，再走下一列，走满 8 个之后又从 CTA0 重新开始 —— 所以这个分配模式每两列重复一次。不同的分配顺序会决定相邻的 CTA 之间共享哪些 A tile 和 B tile，也就直接影响 L2 的复用效率，这正是后文 CTA swizzle 要调的东西。
 
 既然存在一个外层循环用来计算不同的 output tiles，那自然也有个内层循环了。事实上，计算一个 output tile 也不是一步到位的，而是会每次加载一部分的 A tile 和 B tile，即每次加载 BMxBK 的 A 数据，和 BKxBN 的 B 数据 —— 即，一个 BK tile，然后分成 K/BK 步完成计算，这便是内层循环的迭代，我们也称它为 k tile 迭代。
 
