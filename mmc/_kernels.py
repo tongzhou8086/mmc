@@ -75,6 +75,20 @@ BF16_KERNELS = (
         "bf16-double-ns6-store2-bk64", 64, 256, 230400,
         m_multiple=256, n_multiple=256,
     ),
+    # Same design at BN=128. Halving BN doubles the tile count, which is a
+    # wave-quantization play: at 4096 the 74-cluster grid goes from 86.5% to
+    # 98.8% occupancy of its last wave. It costs arithmetic intensity (85.3 vs
+    # 128 FLOP/byte), so it should only win where the loss is quantization and
+    # not bandwidth. The halved B slot also buys pipeline depth for free: NS=8
+    # fits in the same 230400 bytes NS=6 needed at BN=256.
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn128", 64, 256, 181248,
+        m_multiple=256, n_multiple=128,
+    ),
+    KernelSpec(
+        "bf16-double-ns8-store2-bk64-bn128", 64, 256, 230400,
+        m_multiple=256, n_multiple=128,
+    ),
     # BN=512 with a single TMEM accumulator: the epilogue drain is synchronized
     # before the accumulator is reused, which fits twice the output columns in
     # the same TMEM budget. Needs M % 256 == 0, N % 512 == 0 and K % 64 == 0.
@@ -169,5 +183,5 @@ BF16_KERNEL_BY_NAME = {kernel.name: kernel for kernel in BF16_KERNELS}
 # set's version invalidates only that set's cached winners, and the two sets'
 # winners for the same shape cannot collide. Keep these distinct.
 MXFP8_KERNEL_SET_VERSION = "sm100a-mxfp8-x32-v6"
-BF16_KERNEL_SET_VERSION = "sm100a-bf16-v12"
+BF16_KERNEL_SET_VERSION = "sm100a-bf16-v13"
 assert MXFP8_KERNEL_SET_VERSION != BF16_KERNEL_SET_VERSION
