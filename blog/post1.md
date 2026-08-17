@@ -101,21 +101,29 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果必须保存在 TMEM 中，当一个 output tile 所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 [tcgen05.ld](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tcgen05%2520ld#tcgen05-matrix-fragments-shape-3232b)，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld 读取到寄存器中的数据是[按列分布](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tcgen05%2520ld#tcgen05-matrix-fragments-shape-3232b)到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的 layout 方式使得，如果你直接将寄存器结果写入内存就会导致一个 warp 中不同线程按列写入，即 uncoalesced memory access。于是在我们所有的设计中，都会将 tcgen05.ld 的结果先写入一个 SMEM 缓冲区，在缓冲区进行重组，每行能够凑满 128 个连续字节了再进行 coalesced memory write，这也便是最后的两步。
 
-### 一个操作能开始的两个条件
+### 操作之间同步的法则
 划重点来了！！上述的任何一个操作要能够开始，但必须同时满足以下两个条件：
 * 源 Buffer 可读
 * 目的 Buffer 可写
 
 这是整个流水线调度设计正确性保障的根本原理。
 
-(对于 TMA load 和 store 操作而言，内存可以视为总是可读或者总是可写)
+> 对于 TMA load 和 store 操作而言，内存可以视为总是可读或者总是可写
+
+延伸一下，我们可以推导出，任意两个操作要能够同时运行的条件：
+
+* 他们不会访问同一个 buffer，并且其中之一是写操作
 
 ### 单 buffer 的流水线时序图
-在流水线的实际运行过程中，上述 5 种操作，哪些是可以并行的、而哪些必须串行运行，取决于各类 buffer 配置的数量，以及相应的同步策略。我们先来看最简单的一种情况，即，假设 K = 2*BK，即内层循环只有两轮，与此同时，上述 4 种 buffer 都只配置一个。
+根据上面的同步法则，我们可以推导出在所有 buffer 只配置一份的情况的流水线的时序图，即：
 
-所以实际流水线的过程会长这样：TMA load 操作从内存中加载数据到 TMA buffer，而 MMA 操作必须要等到 TMA buffer 里数据到位以后才能开始，而一旦 MMA 操作开始，下一轮 TMA load 就必须等待，即没有下一个 k tile 的 prefetch，因为 TMA buffer 只有一个，而这个 buffer 要么可读，要么可写。在 MMA 操作进行的时候，buffer 处于“可读”状态，便无法同时往里面进行新的数据写入。一旦 MMA 操作结束，此时，下一个 k tile 的 TMA load 可以开始了。跟上一轮一样，此时 MMA 操作又得等待，直到新一轮 k tile 的数据到位以后才能开始 issue MMA。两轮 MMA 操作都结束以后，当前的 output tile 的计算便完毕，此时 MMA buffer 转为可读状态，即 tcgen05.ld 操作可以被 issue 了，值得一提的是，此时 TMA load 可以继续加载下一个 output tile 的第一轮的 k tile，因为读取 MMA buffer 的数据并不影响 TMA buffer，即 tcgen05.ld 操作和 TMA load 可以同时进行，他们并不共享任何的 buffer。tcgen05.ld 是一个相对比较快的操作，由于寄存器容量的限制，所以我们会分多次读取 MMA buffer 中的数据，事实上，我们后文会探讨一些巧妙的配置能够加速这个过程，但在这里我们为通用起见，还是假设会分多次读取 MMA buffer，即一次读取 64 列，读取结束以后，在 store buffer 中进行缓冲，即 stage，之后发出 TMA Store 指令。在 tcgen05.ld 以及 stage 的时候，MMA 操作是否可以继续呢？tcgen05.ld 需要从 MMA buffer 中读取数据，所以 MMA buffer 必须在最后一轮的 64 列被读取结束以后才可以切换到“可写”状态。注意，这里又可以看出来，stage 操作实际上可以和 MMA 并行，还是因为一样的原因，他们并不共享任何的 buffer，所以实际上在最后一轮的 64 列被读取结束以后，之后 MMA 操作可以马上开始，与此同时，Stage 操作也可以并行运行。类似的，当 stage 结束以后， TMA store 也可以和 tcgen05.ld 或者 MMA 并行运行。所以这里我们可以看出流水线设计的一个根本原理：
+* TMA load 不能与 MMA 同时运行，但是可以和 tcgen05.ld 及其后续操作同时运行
+* MMA 不能与 TMA load 或者 tcgen05.ld 同时运行，但是可以和 stage 以及 TMA store 同时运行
+* 以此类推等等
 
-任意两个操作要能够并行运行的必要条件是，他们不共享 buffer。
+为了简化图形的显示，我们假设每个 output tile 只需要两轮内层循环，即 K = 2*BK，即可得到如下的流水线时序图：
+
+<Please add a timeline sequence diagram here to show what can overlap while what can not for single buffer configrations>
 
 
 ### 单个 output tile 的时序图
