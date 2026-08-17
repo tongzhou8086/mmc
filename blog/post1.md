@@ -64,6 +64,8 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 不论流水线怎么编排，数据流动的总体步骤都是一样的，不同方案的区别在于同步方案、数据读写的粒度、tile sizes 的配置、各种 buffer 的数量等等。为了能把这些区别讲清楚，我们先建立一个数据流模型。
 
+### 四种不同的 buffer 资源
+
 流水线的资源调度涉及如下四种 buffer:
 
 * TMA buffer（位于 SMEM）: 存放 TMA 从内存（HBM，High-Bandwidth Memory，也就是常说的 GMEM / Global Memory）中加载的数据
