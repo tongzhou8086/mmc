@@ -4,7 +4,9 @@
 
 希望读完之后你能感受到：在补齐必要的 GPU 架构背景之后，高性能矩阵乘法算子的设计，实质上可以被建模成一个妙趣横生的算法设计问题。
 
-## 背景：Tiled GEMM
+## 背景篇
+
+### 背景：Tiled GEMM
 矩阵乘法的计算模式，天然适合于“分块”（Tiling）这样一种优化方式，即每次加载一小块输入到片上，也只计算一小块输出。这样的好处是提高数据局部性，充分使用每一小块的数据进行计算，减少对于全局内存的冗余访问。这里我们假定读者已对数据局部性、分块等基础背景具有相当的了解，便不再赘述其基本原理，直接探讨分块的大小如何影响流水线的编排。
 
 ![分块矩阵乘法：A 的一个行条与 B 的一个列条，产生 C 的一个 tile](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/tiled-gemm.png)
@@ -15,7 +17,7 @@ $$ A.I. = \frac{(2\times BM \times BN \times BK)}{2\times BM \times BK + 2\times
 
 通过简单的数学推导，我们可以看出，BM 和 BN 越大，算术强度就越大。所以在实际的矩阵乘法算子的设计与实现中，我们会尽可能把 BM 和 BN 配得更大一点，只要能放得下。不过片上存储空间毕竟有限，你不可能使得 BM 和 BN 无限大。对于 Blackwell 而言，能够使用的最大的 SMEM 的大小是 227 KB，而寄存器的总共的容量是 256KB，TMEM（Tensor Memory）的总容量也是 256KB，这些都限制了 BM、BN、BK 的配置大小。在实际应用中，一个常见的配置方案是 BM=128，BN=256，BK=64 或 128。
 
-## 背景：Blackwell 的 TMA 、MMA 和 TMEM
+### 背景：Blackwell 的 TMA 、MMA 和 TMEM
 流水线的设计，本质上就是编写一个软件，使得这个软件能够高效的对于其背后的硬件进行调度。而需要被调度的硬件单元大概有这么三种：TMA（Tensor Memory Accelerator）、MMA（Matrix Multiply Accumulate）以及 CUDA core 或者 Integer core。TMA 是自 Hopper 架构以后引入的一种独立的硬件单元，用来异步的在内存和 SMEM 之间传输数据，既可以将内存数据加载到 SMEM 中，也可以将 SMEM 中的数据写入到内存。由于是独立的硬件单元，TMA 的运作便不再占用 CUDA Cores 或 integer Cores的算力，而可以独立异步地运行。与此同时，它还硬件支持数据的 swizzling。所以在本文所探讨的所有的流水线的编排方案之中，都会默认使用 TMA 来加载数据以及写入数据。相比传统的 SIMT 式的数据搬运方式，即所有线程都需要参与，使用 TMA 只需要一个 warp 的一个线程发出 TMA 指令即可，也称为 bulk load —— 批量加载。
 
 Blackwell 的 MMA 单元则是新一代的 Tensor Core Engine，和 TMA 单元类似，他们都处于一个 SM 内部，都是可以独立异步运作的硬件单元。从软件的角度，也只需要一个 warp 的一个线程发送 MMA 指令，MMA 单元便可以在背后异步地进行 MMA 运算。其实，也正是因为 TMA 和 MMA 单元都是异步的，才会使得流水线的设计大放异彩 —— 软件的功能更趋近于一个“调度者”的角色，而很多的操作都是专门的硬件在背后异步地完成。
@@ -24,7 +26,7 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 上述的硬件单元的设计限制，就成了我们流水线设计的硬性限制，影响了各种 trade off。这里我们仅仅论述 Blackwell 新引入的硬件特性，而像传统的 GPU 架构内容，我们假设读者已经熟悉，不再赘述。
 
-## 程序的宏观框架
+### 程序的宏观框架
 
 在介绍流水线编排模型之前，我们先放出代码的宏观框架，以便为读者建立一个宏观的认知：我们在编什么程。以 CUDA 编程语言为例，众所周知，在 CUDA 编程中，我们需要指明每个线程的行为，同时一个 CTA 中的线程又能通过 SMEM 协作、交换数据等等。于 GEMM kernel 的表达而言，更加自然的方式是以 CTA 为视角来描述；具体在 CUDA 的层面，则需要再映射为每一个线程的操作。我们的程序框架如下：
 
@@ -58,7 +60,9 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 外层循环的每一轮产出一整块 output tile，内层循环的每一轮只推进 BK 这一步 —— 后文所有的流水线设计，本质上都是在给这两层循环里的 load、MMA、epilogue 安排先后顺序和重叠方式，而循环结构本身是不变的。要探讨具体的操作之间的编排方式，譬如谁和谁重叠、如何保证结果正确，则有必要先引入一套理论模型，便于我们分析操作的性质和需要满足的时序关系。
 
-## 数据流模型
+## 理论篇
+
+### 数据流模型
 不论流水线怎么编排，数据流动的总体步骤都是一样的，不同方案的区别在于同步方案、数据读写的粒度、tile sizes 的配置、各种 buffer 的数量等等。为了能把这些区别讲清楚，我们先建立一个数据流模型。
 
 流水线的资源调度涉及如下四种 buffer:
@@ -74,12 +78,12 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 事实上内存也是一种 buffer，但由于从流水线调度的视角，内存操作并不涉及任何的资源调度策略，所以这里略去不表。
 
-### Buffer 的两种状态：可读或可写
+#### Buffer 的两种状态：可读或可写
 上述的任何一种 buffer 都具有读写互斥性，即同一个 buffer 不能同时被读写，如果生产者的写入和消费者的读取同时进行，则会导致读取错误的数据。于是一个 buffer 总会有两种状态，要么处于“可读”状态，即数据已经就绪，要么处于“可写”状态，即数据已被消费完、可被覆盖。
 
 这种互斥性建立了我们后续要探讨的同步机制的根基。
 
-### 针对 Buffer 的 5 种操作
+#### 针对 Buffer 的 5 种操作
 任何的流水线设计，都会涉及到下述 5 种操作，每一种操作会从一个源 Buffer 读取数据，并将操作后的结果写入目的 Buffer —— 从数据流的角度，可以视为数据从源 Buffer 流入了目的 Buffer。
 
 这 5 种操作分别是：
@@ -96,7 +100,7 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果，必须保存在 TMEM 中，如果所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取出来、读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 tcgen05.ld，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld 读取到寄存器中的数据是按列分布到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的 layout 方式使得，如果你直接将寄存器结果写入内存就会导致 uncoalesced memory access。于是在我们所有的设计中，都会将 tcgen05.ld 的结果先写入一个 SMEM 缓冲区，在缓冲区进行重组，每行能够凑满 128 个连续字节了再进行 coalesced memory write，这也便是最后的两步。
 
-### 一个操作能开始的两个条件
+#### 一个操作能开始的两个条件
 划重点来了！！上述的任何一个操作要能够开始，但必须同时满足以下两个条件：
 * 源 Buffer 可读
 * 目的 Buffer 可写
@@ -105,7 +109,7 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 (对于 TMA load 和 store 操作而言，内存可以视为总是可读或者总是可写)
 
-### 单个 output tile 的时序图
+#### 单个 output tile 的时序图
 对于单个的 output tile，如果我们假设它的 k 层循环迭代只有一次，即 K = BK，那上述 5 种操作的时序图便会长下面这个样子：
 
 ![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/pipeline-timeline.png)
@@ -116,7 +120,7 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 ![如果前序的 output tile 的 draining 还未完成，MMA 的 issue 则需要等待 MMA buffer 的释放](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/pipeline-timeline-stall.png)
 
-### 减少 MMA issue 的 stall
+#### 减少 MMA issue 的 stall
 流水线调度设计的根本主旨是减少 MMA issue 的 stall。
 
 这里实际上有两种不同的 MMA issue stall。一种是一个 output tile 内部多次 K 迭代之间的，这种 stall 我们可以使用多个 TMA buffer 来减少 —— 也就是说，在一次 MMA 操作进行的时候，TMA load 同时也在往另外一个 buffer 里面写入数据，这样等当前的 MMA 操作完成之后，它可以立即从另外一个 buffer 里面继续取数据进行 MMA 操作，而无需等待同一个 buffer。
@@ -125,7 +129,7 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 
 
-## Warp Specialization
+### Warp Specialization
 具体到软件编写的层面，上述的 5 种操作会被映射给不同的 warps，各个操作配置多少 Warps 也是流水线设计的一部分。对于本文所探讨的设计方案而言，均采用如下配置：
 
 * 配一个 Warp 进行 TMA load，又称 TMA Warp
@@ -138,7 +142,7 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 但是后面的 tcgen05.ld 和 stage 操作就不太一样了，这两操作要对数据进行批量操作，需要使用 SIMT 模型进行编程，于是我们要配多个 warps 来提高并行度 —— 4 个 warps 是 GPU 编程的一个标配，有时候我们也会配 8 个 warps 来提高能使用的寄存器数量。另外最后的 TMA Store 操作本质上也只需要配一个线程，我们可以给它单独配一个 Warp。但是经验上我们发现，就让 Epilogue Warps 顺便完成 TMA Store，也挺高效的。因为 TMA Store 是一个比较简单的操作，只需要发射一条 TMA store 指令，加上一点简单的地址计算。
  
 
-## 流水线设计的参数配置与原语
+### 流水线设计的参数配置与原语
 流水线设计的表达是一个程序，它表达的是数据在前文所说的这些 buffer 之间流动的时候的同步规则以及时序设计，与此同时，它也涉及到一些基础的参数配置，这些参数就是流水线这个程序的常量。任何的一种调度方式，至少需要配置如下参数：
 
 * Tile sizes: BM/BN/BK
@@ -162,7 +166,9 @@ B tile 之所以后面会除以 2，是因为我们默认了 2 CTA MMA 的开启
 操作与信号；完整定义详见 [docs/pipeline-primitives.md](../docs/pipeline-primitives.md)。
 后文的伪代码都基于这套原语书写。
 
-## 第一种设计：BN256
+## 实现篇
+
+### 第一种设计：BN256
 谈流水线设计，我们先确定 BN 的大小，因为 BM 是硬件设计死的，只能是 128，而 BK 不影响算术强度，只是影响数据操作的 granularity，是一个可选参数。而 BN 的大小则是决定了 accumulator 的大小，也影响算术强度。在第一个设计中，我们采用双 MMA buffer，这样在一个 MMA buffer 到了 draining 阶段的时候，与此同时，下一个 output tile 的 MMA 依然能够继续进行，只需要将数据保存在另一个 MMA buffer 中即可，这样便能实现 draining 和 MMA 操作的重叠。由于 TMEM 的大小是 128 行 x 512 列，所以 BN 设为 256，就可以放下两个 MMA buffer。
 
 确定了 BN 的大小，我们再看一下其他 buffer 的配置，这里暂且将 BK 设为 64，于是在使用 2 CTA MMA 的情况下，一个 A Tile 和 B Tile 占用的空间分别是 16KB，一共便是 32KB，也就是一个 TMA buffer 的大小。在这个配置中，我们选择配置 6 个 TMA buffer，加上两个 store buffer，这样占用的 SMEM 空间正好是 192KB+32KB = 224KB，刚好在 227KB 的容量范围内。
@@ -235,7 +241,7 @@ for tile in my_output_tiles:
 
 值得注意的是，同样的这一套逻辑也完全能够适配 BK=128 的情况，BK=128 与 BK=64 唯一的区别就是 TMA Buffer 从 6 个变为了 3 个，而逻辑部分完全不变。
 
-### 性能数字
+#### 性能数字
 
 下面我们看一下这个设计在方阵上的性能是多少，事实上我们考虑两种不同的 BK 选配：64/128，以及三种不同的 GROUP_SIZE_M （简称 GSM，代表 CTA swizzle 的深度）选配:8/12/16。不同的 GSM 选配仅仅需要改一个常数参数，而 BK=64/128 的区别也仅仅在于把 TMA buffer 的数量砍半，逻辑部分完全一致。
 以下性能数字的测量方法使用 triton.do_bench 获得 median runtime，warmup 和 repetition time 都设置为 1 秒；每个尺寸跑三轮独立的测量，每轮内部再做三次打乱顺序的采样，最后取中位数。
@@ -243,7 +249,7 @@ for tile in my_output_tiles:
 ![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/perf-bn256.png)
 
 
-## 第二种设计：BN512 
+### 第二种设计：BN512 
 BN256 的设计其实已经非常流畅了，TMA buffer 有 6个，应该能够流畅地将数据加载到 SMEM 中，这样 MMA 总是有操作数可以计算；此外，MMA buffer 也有两个，所以如果一个 output tile 的 epilogue 能在下下个 output tile 开始之前完成，理论上我们就可以持续不停的无卡顿地 issue MMA，这已经是一个非常流畅的设计了。
 
 不过，根据实际性能结果，我们发现，哪怕 MMA 的确能够持续不断地在 issue，但是每次只用了一半的 TMEM 做 accumulation 算术强度还是不太够，也就是说，同样的数据量进来，它产生的计算量有限，于是，哪怕 MMA 的 issue 不卡顿，但是实际产生的计算量还是无法吃满 MMA Engine。
@@ -320,7 +326,7 @@ for tile in my_output_tiles:
 
 和 BN256 版本对比，结构上其实只差了一处：`wait_until_free` 前面没有了 `acc = tile % NUM_ACC` 这一层轮转。只有一个 accumulator，所以下一个 output tile 的第一次 MMA 必须等到当前 tile 完全 drain 完才能发出，这就是前面说的「卡一下」。epilogue 本身则和 BN256 完全一样，仍然是 8 个 64 列的 chunk 依次读出、stage、store。
 
-### 性能数字
+#### 性能数字
 
 BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果 BK=64 和 128 分别使用 4 个和 2 个 TMA buffer。性能测量方法与上面相同。
 
@@ -333,10 +339,10 @@ BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果
 * GSM 在这里的作用比 BN256 明显得多：BK=128 在 20480 上从 GSM=8 的 1423 涨到 GSM=16 的 1468；BK=64 在 17408 上从 1316 涨到 1412。
 * 最好的一档（BK=128 + GSM=16）在 18 个尺寸中有 10 个跑赢了 cuBLAS。
 
-## 第三种设计：BN512 加强版
+### 第三种设计：BN512 加强版
 在上述的 BN512 基础设计中，epilogue 的部分还是每次从 TMEM 中 load 64 列数据，直到最后一列都 load 完成以后才释放完整的 MMA buffer，这会导致 epilogue 占据 MMA buffer 比较长地时间。在下面的新版设计中，我们会做两个方面的改进。首先，我们加大 tcgen05.ld buffer 的容量，使得它一次能存放下 128 行 x 256 列的数据 —— 共计 128KB tcgen05.ld 的结果，于是 tcgen05.ld buffer 的容量需要扩充到 128KB，即整个 SM 上一半的寄存器容量。我们先把这 128KB 的数据都加载到寄存器中以后，随即释放 MMA buffer 左边的一半，之后再对这 128KB 的数据进行 stage 和 TMA store 操作，以及后续的 load 另一半的 128KB 结果。这样设计的益处在于，MMA buffer 的其中一半（256 列）可以被提前释放，而非要等到整个 MMA buffer 数据都搬完以后才能释放。更早地释放可以使得左边一半的 MMA 可以先开始 issue，只要对应的 k tile 的数据已经到位，这样便能和 epilogue 的后续操作重叠起来，减少 MMA issue 的卡顿。
 
-### 性能数字
+#### 性能数字
 
 这一组我们同样扫了 GSM 8/12/16 与两种 BK，共 6 种选配。
 
@@ -344,7 +350,7 @@ BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果
 
 可以看出，在大尺寸上，这种新设计和前面的 BN512 基础版设计性能差不多，大差不差，但是对于相当小一些的方阵的性能提升还是非常显著的，譬如 5120、6144 等。
 
-## 工具
+### 工具
 在 Meshy 我们开发了以下两个与此话题相关的工具：
 * [MMComposer](https://mmcomposer.streamlit.app/)：一个 web app，上面 host 了各种我们开发的流水线编排设计，kernel 代码清晰易懂，对应的 host code 也有，可以一键下载，直接在 B200 上运行
 * [mmc](github.com/tongzhou8086/mmc)：一个高性能的 GEMM 算子库，目前支持 BF16 和 MXFP8；里面集成了各种 kernel 的实现，并且会 auto tune 自动选择最优的 Kernel
