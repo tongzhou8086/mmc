@@ -62,7 +62,6 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 ## 理论篇
 
-### 数据流模型
 不论流水线怎么编排，数据流动的总体步骤都是一样的，不同方案的区别在于同步方案、数据读写的粒度、tile sizes 的配置、各种 buffer 的数量等等。为了能把这些区别讲清楚，我们先建立一个数据流模型。
 
 流水线的资源调度涉及如下四种 buffer:
@@ -78,12 +77,12 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 事实上内存也是一种 buffer，但由于从流水线调度的视角，内存操作并不涉及任何的资源调度策略，所以这里略去不表。
 
-#### Buffer 的两种状态：可读或可写
+### Buffer 的两种状态：可读或可写
 上述的任何一种 buffer 都具有读写互斥性，即同一个 buffer 不能同时被读写，如果生产者的写入和消费者的读取同时进行，则会导致读取错误的数据。于是一个 buffer 总会有两种状态，要么处于“可读”状态，即数据已经就绪，要么处于“可写”状态，即数据已被消费完、可被覆盖。
 
 这种互斥性建立了我们后续要探讨的同步机制的根基。
 
-#### 针对 Buffer 的 5 种操作
+### 针对 Buffer 的 5 种操作
 任何的流水线设计，都会涉及到下述 5 种操作，每一种操作会从一个源 Buffer 读取数据，并将操作后的结果写入目的 Buffer —— 从数据流的角度，可以视为数据从源 Buffer 流入了目的 Buffer。
 
 这 5 种操作分别是：
@@ -100,7 +99,7 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果，必须保存在 TMEM 中，如果所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取出来、读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 tcgen05.ld，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld 读取到寄存器中的数据是按列分布到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的 layout 方式使得，如果你直接将寄存器结果写入内存就会导致 uncoalesced memory access。于是在我们所有的设计中，都会将 tcgen05.ld 的结果先写入一个 SMEM 缓冲区，在缓冲区进行重组，每行能够凑满 128 个连续字节了再进行 coalesced memory write，这也便是最后的两步。
 
-#### 一个操作能开始的两个条件
+### 一个操作能开始的两个条件
 划重点来了！！上述的任何一个操作要能够开始，但必须同时满足以下两个条件：
 * 源 Buffer 可读
 * 目的 Buffer 可写
@@ -109,7 +108,7 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 (对于 TMA load 和 store 操作而言，内存可以视为总是可读或者总是可写)
 
-#### 单个 output tile 的时序图
+### 单个 output tile 的时序图
 对于单个的 output tile，如果我们假设它的 k 层循环迭代只有一次，即 K = BK，那上述 5 种操作的时序图便会长下面这个样子：
 
 ![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/pipeline-timeline.png)
@@ -120,7 +119,7 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 ![如果前序的 output tile 的 draining 还未完成，MMA 的 issue 则需要等待 MMA buffer 的释放](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/pipeline-timeline-stall.png)
 
-#### 减少 MMA issue 的 stall
+### 减少 MMA issue 的 stall
 流水线调度设计的根本主旨是减少 MMA issue 的 stall。
 
 这里实际上有两种不同的 MMA issue stall。一种是一个 output tile 内部多次 K 迭代之间的，这种 stall 我们可以使用多个 TMA buffer 来减少 —— 也就是说，在一次 MMA 操作进行的时候，TMA load 同时也在往另外一个 buffer 里面写入数据，这样等当前的 MMA 操作完成之后，它可以立即从另外一个 buffer 里面继续取数据进行 MMA 操作，而无需等待同一个 buffer。
