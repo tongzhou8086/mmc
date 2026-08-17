@@ -123,7 +123,9 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 为了简化图形的显示，我们假设每个 output tile 只需要两轮内层循环，即 K = 2*BK，即可得到如下的流水线时序图：
 
-<Please add a timeline sequence diagram here to show what can overlap while what can not for single buffer configrations>
+![单 buffer 配置下的流水线时序（K = 2·BK）](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/single-buffer-timeline.png)
+
+图上有两件事值得注意。一是在同一个 output tile 内部，TMA load 与 MMA 只能交替进行 —— 只有一份 TMA buffer，下一个 k tile 的 load 必须等 MMA 把当前这份数据读完才能开始，所以整条链上相邻的两步永远串行；二是跨 output tile 的时候，下一个 tile 的 load 和 MMA 却可以和当前 tile 的 drain（tcgen05.ld → stage → TMA store）重叠，因为它们之间没有共用任何一个 buffer。换句话说，即使每种 buffer 都只有一份，流水线也并非完全串行，只是能重叠的部分非常有限 —— 后文给每种 buffer 配置多份，正是为了把上面第一条限制放松掉。
 
 
 ### 单个 output tile 的时序图
