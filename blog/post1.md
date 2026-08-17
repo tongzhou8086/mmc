@@ -128,6 +128,12 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 图上有两件事值得注意。一是在同一个 output tile 内部，TMA load 与 MMA 只能交替进行 —— 只有一份 TMA buffer，下一个 k tile 的 load 必须等 MMA 把当前这份数据读完才能开始，所以整条链上相邻的两步永远串行；二是跨 output tile 的时候，下一个 tile 的 load 和 MMA 却可以和当前 tile 的 drain（tcgen05.ld → stage → TMA store）重叠，因为它们之间没有共用任何一个 buffer。换句话说，即使每种 buffer 都只有一份，流水线也并非完全串行，只是能重叠的部分非常有限 —— 后文给每种 buffer 配置多份，正是为了把上面第一条限制放松掉。
 
 
+那么这个串行要怎么打破？回到上面的判据：TMA load 与 MMA 不能重叠，唯一的原因是它们共用同一份 TMA buffer。既然如此，把 TMA buffer 配成两份就行了 —— k=1 的 load 写第二份 buffer，与正在读第一份的 MMA k=0 不再冲突，于是它们可以同时进行，MMA k=0 与 k=1 之间的那个空档也就消失了：
+
+![两份 TMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-tma-buffer-timeline.png)
+
+对比上一张图可以看到，MMA 那一行从「隔一段、跑一段」变成了连续的两块。这也正是后文所有设计里 NS（TMA buffer 个数）这个参数的意义：它买到的就是这一段重叠。同样的道理可以套到链条上的每一个环节 —— 哪一处的串行让你难受，就把那一处共用的 buffer 多配几份。
+
 ### 单个 output tile 的时序图
 对于单个的 output tile，如果我们假设它的 k 层循环迭代只有一次，即 K = BK，那上述 5 种操作的时序图便会长下面这个样子：
 
