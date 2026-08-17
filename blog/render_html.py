@@ -51,7 +51,9 @@ main { margin: 0 auto; padding: 3rem 1.5rem 6rem; max-width: 46rem; }
 #toc a { display: block; padding: .3rem .6rem; border-left: 2px solid var(--rule);
          color: #52606d; text-decoration: none; }
 #toc a:hover { color: #1f2933; background: #f2f4f7; }
+#toc .lvl2 a { font-weight: 700; }
 #toc .lvl3 a { padding-left: 1.5rem; font-size: .95em; }
+#toc .lvl4 a { padding-left: 2.5rem; font-size: .9em; }
 #toc a.active { color: #2b6cb0; border-left-color: #2b6cb0; font-weight: 600; }
 @media (min-width: 68rem) {
   #toc { position: fixed; top: 0; left: 0; width: var(--toc); height: 100vh;
@@ -71,10 +73,12 @@ main { margin: 0 auto; padding: 3rem 1.5rem 6rem; max-width: 46rem; }
   main { padding-top: 1.5rem; }
 }
 h1 { font-size: 1.9rem; line-height: 1.35; margin: 0 0 1.5rem; }
-h2 { font-size: 1.4rem; margin: 3rem 0 1rem; padding-top: 1rem;
-     border-top: 1px solid #e3e7ec; }
-h3 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
-h2, h3 { scroll-margin-top: 1.5rem; }
+h2 { font-size: 1.05rem; margin: 4rem 0 1.6rem; padding-top: 1.4rem;
+     border-top: 2px solid #cfd6de; letter-spacing: .14em;
+     text-transform: none; color: #6b7684; font-weight: 700; }
+h3 { font-size: 1.15rem; margin: 2.2rem 0 .75rem; }
+h4 { font-size: 1rem; margin: 1.6rem 0 .6rem; color: #3c4a57; }
+h2, h3, h4 { scroll-margin-top: 1.5rem; }
 p, li { overflow-wrap: break-word; }
 ul { padding-left: 1.4rem; }
 li { margin: .35rem 0; }
@@ -99,7 +103,8 @@ figcaption { text-align: center; font-size: .85rem; color: #6b7684; }
   #toc a { color: #b4bcc6; }
   #toc a:hover { color: #fff; background: #23282e; }
   #toc a.active { color: #7cb0e0; border-left-color: #7cb0e0; }
-  h2 { border-top-color: #2c3238; }
+  h2 { border-top-color: #3a434c; color: #99a2ad; }
+  h4 { color: #b4bcc6; }
   a { color: #7cb0e0; }
   code { background: #23282e; }
   pre { background: #1b1f24; border-color: #2c3238; }
@@ -202,7 +207,7 @@ def convert(md, inlined, toc):
         m = re.match(r"(#{1,4})\s+(.*)", stripped)
         if m:
             lvl, text = len(m.group(1)), inline_md(m.group(2))
-            if lvl in (2, 3):     # h2/h3 are what the sidebar navigates to
+            if lvl in (2, 3, 4):  # h2 parts, h3 sections, h4 subsections
                 anchor = f"sec-{len(toc) + 1}"
                 toc.append((lvl, anchor, text))
                 body.append(f'<h{lvl} id="{anchor}">{text}</h{lvl}>')
