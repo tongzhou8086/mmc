@@ -129,6 +129,8 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 
 
+## 实现篇
+
 ### Warp Specialization
 具体到软件编写的层面，上述的 5 种操作会被映射给不同的 warps，各个操作配置多少 Warps 也是流水线设计的一部分。对于本文所探讨的设计方案而言，均采用如下配置：
 
@@ -165,8 +167,6 @@ B tile 之所以后面会除以 2，是因为我们默认了 2 CTA MMA 的开启
 同步时机上各不相同，但都可以用同一套原语来表达，即一套流水线调度的基本对象，及其对应的
 操作与信号；完整定义详见 [docs/pipeline-primitives.md](../docs/pipeline-primitives.md)。
 后文的伪代码都基于这套原语书写。
-
-## 实现篇
 
 ### 第一种设计：BN256
 谈流水线设计，我们先确定 BN 的大小，因为 BM 是硬件设计死的，只能是 128，而 BK 不影响算术强度，只是影响数据操作的 granularity，是一个可选参数。而 BN 的大小则是决定了 accumulator 的大小，也影响算术强度。在第一个设计中，我们采用双 MMA buffer，这样在一个 MMA buffer 到了 draining 阶段的时候，与此同时，下一个 output tile 的 MMA 依然能够继续进行，只需要将数据保存在另一个 MMA buffer 中即可，这样便能实现 draining 和 MMA 操作的重叠。由于 TMEM 的大小是 128 行 x 512 列，所以 BN 设为 256，就可以放下两个 MMA buffer。
