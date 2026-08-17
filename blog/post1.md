@@ -134,6 +134,12 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 对比上一张图可以看到，MMA 那一行从「隔一段、跑一段」变成了连续的两块。这也正是后文所有设计里 NS（TMA buffer 个数）这个参数的意义：它买到的就是这一段重叠。同样的道理可以套到链条上的每一个环节 —— 哪一处的串行让你难受，就把那一处共用的 buffer 多配几份。
 
+不过 MMA 那一行还剩一个空档：跨 output tile 的地方。原因同样出在共用 buffer 上 —— 只有一份 MMA buffer，下一个 tile 的 MMA 必须等 tcgen05.ld 把上一个 tile 的结果搬走、把 accumulator 腾出来才能开始，也就是被 draining 卡住了。按同样的思路，把 MMA buffer 也配成两份：下一个 tile 累加到第二个 accumulator 上，与正在被 drain 的第一个互不相干：
+
+![两份 TMA buffer 加两份 MMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-accumulator-timeline.png)
+
+这下 MMA 那一行从头到尾连成了一片，再没有空档 —— 而 MMA 不停，正是整个流水线编排追求的目标。后文第一种设计里的双 MMA buffer，做的就是这件事。
+
 ### 单个 output tile 的时序图
 对于单个的 output tile，如果我们假设它的 k 层循环迭代只有一次，即 K = BK，那上述 5 种操作的时序图便会长下面这个样子：
 
