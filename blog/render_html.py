@@ -73,9 +73,11 @@ main { margin: 0 auto; padding: 3rem 1.5rem 6rem; max-width: 46rem; }
   main { padding-top: 1.5rem; }
 }
 h1 { font-size: 1.9rem; line-height: 1.35; margin: 0 0 1.5rem; }
-h2 { font-size: 1.05rem; margin: 4rem 0 1.6rem; padding-top: 1.4rem;
+/* part dividers: centred, with the rule running the full column width so the
+   label reads as a break in the flow rather than as a heading */
+h2 { font-size: 1.05rem; margin: 4rem 0 1.8rem; padding-top: 1.4rem;
      border-top: 2px solid #cfd6de; letter-spacing: .14em;
-     text-transform: none; color: #6b7684; font-weight: 700; }
+     color: #6b7684; font-weight: 700; text-align: center; }
 h3 { font-size: 1.15rem; margin: 2.2rem 0 .75rem; }
 h4 { font-size: 1rem; margin: 1.6rem 0 .6rem; color: #3c4a57; }
 h2, h3, h4 { scroll-margin-top: 1.5rem; }
