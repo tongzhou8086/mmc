@@ -158,7 +158,13 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 这下 MMA 那一行从头到尾连成了一片，再没有空档 —— 而 MMA 能持续 issue，正是整个流水线编排追求的目标。后文第一种设计里的双 MMA buffer，做的就是这件事。
 
+### 到底需要几个 buffer？
 
+上图中我们显示了，通过增加 TMA buffer 的数量，我们可以达到重叠 TMA load 和 MMA 操作的效果；同理，通过增加 MMA buffer 的数量，可以达到重叠 MMA 和 tcgen05.ld 的效果，那问题来了，到底需要几个 buffer 才能够实现完全的无等待？这实际上取决于生产操作和消费操作之间耗时的比例。
+
+以上图所示的两个 buffer 为例，假设每一次 TMA load 和每一次 MMA 的耗时完全一样，那么两个 TMA buffer 就完全够用了 —— 这两个 buffer 可以不断地轮回，每次一个 buffer 中数据到位时，对这个 buffer 的消费，即 MMA 操作，和下一个 buffer 的生产，即 TMA load 同时开始，之后两者同时结束 —— MMA 操作和 TMA load 操作则轮换一下各自的源和目的 buffer，正好完全卡点。
+
+如果 MMA 操作需要的时间更长呢？那就会出现 TMA load 操作提前结束了，此时另一个 buffer 的数据也到位了，但是下一轮的 TMA load 则需要等待，因为 MMA 对上一个 buffer 的数据读取还没结束。 
 
 ## 实现篇
 
