@@ -162,9 +162,19 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 上图中我们显示了，通过增加 TMA buffer 的数量，我们可以达到重叠 TMA load 和 MMA 操作的效果；同理，通过增加 MMA buffer 的数量，可以达到重叠 MMA 和 tcgen05.ld 的效果，那问题来了，到底需要几个 buffer 才能够实现完全的无等待？这实际上取决于生产操作和消费操作之间耗时的比例。
 
-以上图所示的两个 buffer 为例，假设每一次 TMA load 和每一次 MMA 的耗时完全一样，那么两个 TMA buffer 就完全够用了 —— 这两个 buffer 可以不断地轮回，每次一个 buffer 中数据到位时，对这个 buffer 的消费，即 MMA 操作，和下一个 buffer 的生产，即 TMA load 同时开始，之后两者同时结束 —— MMA 操作和 TMA load 操作则轮换一下各自的源和目的 buffer，正好完全卡点。
+这里的思维模型是，当一次 TMA load 操作结束，
 
-如果 MMA 操作需要的时间更长呢？那就会出现 TMA load 操作提前结束了，此时另一个 buffer 的数据也到位了，但是下一轮的 TMA load 则需要等待，因为 MMA 对上一个 buffer 的数据读取还没结束。 
+以上图所示的两个 buffer 为例，是否可以完全无等待，则是看，当一次 TMA load 操作结束，此时是否可以直接轮转到另一个 buffer 往里面开始加载数据？如果总是可以，那 TMA load 永远都不会有等待，即，使用另外一个 buffer 的 MMA 操作已经结束。鉴于一个 buffer 的 MMA 操作和另一个 buffer 的 TMA load 操作总是可以同时开始，于是可以推导出，如果 MMA 操作每一次耗时都小于等于 TMA load，则 TMA load 总是不会有等待。
+
+假设每一次 TMA load 和每一次 MMA 的耗时完全一样，那么两个 TMA buffer 就完全够用了 —— 这两个 buffer 可以不断地轮回，每次一个 buffer 中数据到位时，对这个 buffer 的消费，即 MMA 操作，和下一个 buffer 的生产，即 TMA load 同时开始，之后两者同时结束 —— MMA 操作和 TMA load 操作则轮换一下各自的源和目的 buffer，正好完全卡点。
+
+如果 MMA 操作需要的时间更长呢？那就会出现 TMA load 操作提前结束了，此时另一个 buffer 的数据也到位了，但是下一轮的 TMA load 则需要等待，因为 MMA 对上一个 buffer 的数据读取还没结束。
+
+猜想：
+
+如果 MMA 的耗时和 TMA load 的耗时的比例 <= N / 2，则使用 N 个 TMA buffer 可以保证 TMA load 操作持续轮转运行，不会等待。
+
+通过画图，我感觉上述猜想对于 N=2、3、4似 乎成立，但是是否真的成立，有待进一步证明。
 
 ## 实现篇
 
