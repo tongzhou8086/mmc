@@ -125,38 +125,19 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 ![单 buffer 配置下的流水线时序（K = 2·BK）](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/single-buffer-timeline.png)
 
-图上有两件事值得注意。一是在同一个 output tile 内部，TMA load 与 MMA 只能交替进行 —— 只有一份 TMA buffer，下一个 k tile 的 load 必须等 MMA 把当前这份数据读完才能开始，所以整条链上相邻的两步永远串行；二是跨 output tile 的时候，下一个 tile 的 load 和 MMA 却可以和当前 tile 的 drain（tcgen05.ld → stage → TMA store）重叠，因为它们之间没有共用任何一个 buffer。换句话说，即使每种 buffer 都只有一份，流水线也并非完全串行，只是能重叠的部分非常有限 —— 后文给每种 buffer 配置多份，正是为了把上面第一条限制放松掉。
+### 解决第一种卡顿
 
-
-那么这个串行要怎么打破？回到上面的判据：TMA load 与 MMA 不能重叠，唯一的原因是它们共用同一份 TMA buffer。既然如此，把 TMA buffer 配成两份就行了 —— k=1 的 load 写第二份 buffer，与正在读第一份的 MMA k=0 不再冲突，于是它们可以同时进行，MMA k=0 与 k=1 之间的那个空档也就消失了。这时 TMA load 那一行的颜色开始交替，两份 buffer 轮流被写入，一眼就能看出来：
+使用多个 TMA buffer 便可让 TMA load 和 MMA 操作并行起来，而无需互相等待同一个 buffer。下图演示使用两个 TMA buffer 的情况，实际Blackwell 上实现中，我们一般会使用更多的 TMA buffer。
 
 ![两份 TMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-tma-buffer-timeline.png)
 
-对比上一张图可以看到，MMA 那一行从「隔一段、跑一段」变成了连续的两块。这也正是后文所有设计里 NS（TMA buffer 个数）这个参数的意义：它买到的就是这一段重叠。同样的道理可以套到链条上的每一个环节 —— 哪一处的串行让你难受，就把那一处共用的 buffer 多配几份。
+### 解决第二种卡顿
 
-不过 MMA 那一行还剩一个空档：跨 output tile 的地方。原因同样出在共用 buffer 上 —— 只有一份 MMA buffer，下一个 tile 的 MMA 必须等 tcgen05.ld 把上一个 tile 的结果搬走、把 accumulator 腾出来才能开始，也就是被 draining 卡住了。按同样的思路，把 MMA buffer 也配成两份：下一个 tile 累加到第二个 accumulator 上，与正在被 drain 的第一个互不相干：
+类似的，我们通过使用两个 MMA buffer，便能够使得 MMA 操作和 tcgen05.ld 操作重叠起来 —— 各自操作不同的 MMA buffer，如下图所示：
 
 ![两份 TMA buffer 加两份 MMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-accumulator-timeline.png)
 
-这下 MMA 那一行从头到尾连成了一片，再没有空档 —— 而 MMA 不停，正是整个流水线编排追求的目标。后文第一种设计里的双 MMA buffer，做的就是这件事。
-
-### 单个 output tile 的时序图
-对于单个的 output tile，如果我们假设它的 k 层循环迭代只有一次，即 K = BK，那上述 5 种操作的时序图便会长下面这个样子：
-
-![一个 output tile 的五步操作](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/pipeline-timeline.png)
-
-图上每一行是一种操作，箭头从左到右，时间也是从左到右 —— 下一行的起点，就是上一行结束的时刻。两行之间的竖直虚线表示的正是 buffer 的状态变化：上一个操作刚刚把它填满，于是同一个 buffer 到了下一行就成了下一个操作的源。一个箭头的起点表示操作的开始，终点则表示操作完成，所以箭头的终点也会代表对应 buffer 的状态。譬如，TMA load 箭头的终点则表示对应的 TMA buffer 状态变为“可读”，即 TMA load 操作已完成；与此同时，一种操作的结束也代表其源 buffer 的状态变为“可写”。譬如 MMA 箭头的终点代表一次 BK tile 的 MMA 操作完成，假设 K=BK，这时便会有两个Buffer 的状态都会改变：目的 Buffer 状态变为“可读”，以及源 Buffer 状态变为“可写” —— 数据既然已被消费完毕，那源 Buffer 当然就可以重新写入新的数据喽。
-
-另外，这张图上看不到的部分还包括，它只画出了一个操作能开始的条件之一，即源 Buffer 可读，另一个条件，即目的 Buffer 可写，图上是看不出来的。举个例子，假如一次 MMA 操作进行之前，哪怕对应的 TMA load 操作已经完成，若是将要被写入的 MMA buffer 目前状态并不可写，譬如前序的 output tile 还没有完成 draining，那 MMA 操作也无法被 issue —— MMA buffer 还没有被释放呢。我们用下面这张图来表示这种情况，注意 MMA 那一行开头的那段 gap —— 竖直虚线标出的是 TMA load 完成、TMA buffer 变为可读的那一刻，但 MMA 并不能从这一刻就开始，它还要等待 MMA buffer 的释放：
-
-![如果前序的 output tile 的 draining 还未完成，MMA 的 issue 则需要等待 MMA buffer 的释放](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/pipeline-timeline-stall.png)
-
-### 减少 MMA issue 的 stall
-流水线调度设计的根本主旨是减少 MMA issue 的 stall。
-
-这里实际上有两种不同的 MMA issue stall。一种是一个 output tile 内部多次 K 迭代之间的，这种 stall 我们可以使用多个 TMA buffer 来减少 —— 也就是说，在一次 MMA 操作进行的时候，TMA load 同时也在往另外一个 buffer 里面写入数据，这样等当前的 MMA 操作完成之后，它可以立即从另外一个 buffer 里面继续取数据进行 MMA 操作，而无需等待同一个 buffer。
-
-另一种 MMA issue stall 是连续的多个 output tile 之间的 stall。在连续的多个 output tile 之间，如果要进行 MMA 操作的话，不光是要 TMA 加载的数据到位，同样也还需要 MMA buffer 能够被写入。如果上一个 output tile 的 MMA 结果正在从 MMA buffer 中被读取出来、正在 draining 的过程中，那下一轮的就无法写入，不然就会覆盖数据。针对这样的 stall，我们也有两种解决方案：一种就是使用多个 MMA buffer，譬如两个；另外一种方案就是加快 draining 的过程，通过把数据先暂存到寄存器中，提前释放 MMA buffer。
+这下 MMA 那一行从头到尾连成了一片，再没有空档 —— 而 MMA 能持续 issue，正是整个流水线编排追求的目标。后文第一种设计里的双 MMA buffer，做的就是这件事。
 
 
 
