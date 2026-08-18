@@ -121,14 +121,14 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 * MMA 不能与 TMA load 或者 tcgen05.ld 同时运行，但是可以和 stage 以及 TMA store 同时运行
 * 以此类推等等
 
-为了简化图形的显示，我们假设每个 output tile 只需要两轮内层循环，即 K = 2*BK，即可得到如下的流水线时序图：
+为了简化图形的显示，我们假设每个 output tile 只需要两轮内层循环，即 K = 2*BK，即可得到如下的流水线时序图。图中每个方块的颜色表示这一步写入的是哪一份 buffer —— 现在每种 buffer 都只有一份，所以整张图只有一种颜色：
 
 ![单 buffer 配置下的流水线时序（K = 2·BK）](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/single-buffer-timeline.png)
 
 图上有两件事值得注意。一是在同一个 output tile 内部，TMA load 与 MMA 只能交替进行 —— 只有一份 TMA buffer，下一个 k tile 的 load 必须等 MMA 把当前这份数据读完才能开始，所以整条链上相邻的两步永远串行；二是跨 output tile 的时候，下一个 tile 的 load 和 MMA 却可以和当前 tile 的 drain（tcgen05.ld → stage → TMA store）重叠，因为它们之间没有共用任何一个 buffer。换句话说，即使每种 buffer 都只有一份，流水线也并非完全串行，只是能重叠的部分非常有限 —— 后文给每种 buffer 配置多份，正是为了把上面第一条限制放松掉。
 
 
-那么这个串行要怎么打破？回到上面的判据：TMA load 与 MMA 不能重叠，唯一的原因是它们共用同一份 TMA buffer。既然如此，把 TMA buffer 配成两份就行了 —— k=1 的 load 写第二份 buffer，与正在读第一份的 MMA k=0 不再冲突，于是它们可以同时进行，MMA k=0 与 k=1 之间的那个空档也就消失了：
+那么这个串行要怎么打破？回到上面的判据：TMA load 与 MMA 不能重叠，唯一的原因是它们共用同一份 TMA buffer。既然如此，把 TMA buffer 配成两份就行了 —— k=1 的 load 写第二份 buffer，与正在读第一份的 MMA k=0 不再冲突，于是它们可以同时进行，MMA k=0 与 k=1 之间的那个空档也就消失了。这时 TMA load 那一行的颜色开始交替，两份 buffer 轮流被写入，一眼就能看出来：
 
 ![两份 TMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-tma-buffer-timeline.png)
 
