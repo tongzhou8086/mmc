@@ -125,13 +125,19 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 ![单 buffer 配置下的流水线时序（K = 2·BK）](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/single-buffer-timeline.png)
 
-### 解决第一种卡顿
+可以看出，图中 MMA 的 issue 有两种类型的停顿：
+* 同一个 output tile，不同的 k tile 之间存在停顿（或者空挡），需要等待 TMA load 的结束
+* 不同的 output tile 交接时，也存在空挡，需要等待 tcgen05.ld 的结束
+
+这两种停顿我们也可以称为内层循环的停顿和外层循环的停顿。
+
+### 解决内层停顿
 
 使用多个 TMA buffer 便可让 TMA load 和 MMA 操作并行起来，而无需互相等待同一个 buffer。下图演示使用两个 TMA buffer 的情况，实际Blackwell 上实现中，我们一般会使用更多的 TMA buffer。
 
 ![两份 TMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-tma-buffer-timeline.png)
 
-### 解决第二种卡顿
+### 解决外层停顿
 
 类似的，我们通过使用两个 MMA buffer，便能够使得 MMA 操作和 tcgen05.ld 操作重叠起来 —— 各自操作不同的 MMA buffer，如下图所示：
 
