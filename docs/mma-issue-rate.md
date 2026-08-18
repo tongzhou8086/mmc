@@ -72,6 +72,68 @@ design 2  BN=512    16384     1299   97.7%        1329       8.57 M/s       117 
 design 1  BN=256    20480     1212   99.6%        1216       7.84 M/s       128 ns
 design 2  BN=512    20480     1240   98.1%        1264       8.14 M/s       123 ns
 
+## What is established
+
+**A is a hardware constant.** Verified in the source: both designs build their
+instruction descriptor with N=256, because `tcgen05.mma` caps N there. BN=512 is
+two N=256 MMAs per k-tile, not one wider instruction. No design in this repo can
+win by producing more compute per issue, so the design space is `f` and `duty`
+only. This part needs no measurement and is not in doubt.
+
+**The duty cycle is real and behaves as the model says.** BN=512's single
+accumulator leaves its drain exposed: 90.6% duty at 4096 against BN=256's 98.3%,
+with the gap closing as `1/K` (95.3% at 8192, 98.1% at 20480). That is measured
+directly from the two timestamps and is stable across runs.
+
+## What is NOT established
+
+The first version of this analysis derived `f` from the measured throughput and
+the measured duty, which is circular: `f` could not have disagreed with the
+benchmark because it was computed from it.
+
+Making it a genuine prediction - FLOP per cycle straight from the
+instrumentation, one global clock constant for the whole table - it fails:
+
+| shape | config | cyc/issue | duty | predicted | measured | error |
+|--:|:--|--:|--:|--:|--:|--:|
+| 20480 | BN=256 BK=64 GSM=8 | 127.8 | 99.7% | 1349 | 1091 | **+23.6%** |
+| 20480 | BN=512 BK=64 GSM=8 | 127.4 | 98.2% | 1333 | 1199 | +11.2% |
+| 20480 | BN=512 BK=64 GSM=12 | 127.4 | 98.1% | 1333 | 1276 | +4.4% |
+| 20480 | BN=512 BK=64 GSM=16 | 127.4 | 98.2% | 1333 | 1290 | +3.4% |
+| 20480 | BN=512 BK=128 GSM=16 | 133.8 | 98.3% | 1271 | 1388 | -8.4% |
+
+The decisive row group is GSM at 20480: the instrumentation reports **127.4
+cycles per issue and 98.2% duty for all three settings**, identical to three
+digits, while the benchmark separates them by 7.6%. An instrument that cannot
+distinguish configurations the benchmark clearly separates is not measuring the
+quantity that sets throughput.
+
+Two candidate causes, neither ruled out here:
+
+- **The MMA warp runs ahead of the engine.** It issues into a queue, and with a
+  multi-stage TMA ring its `data-ready` wait is absorbed by buffer depth. The
+  warp's timeline is then insensitive to how quickly operands actually arrive -
+  which is precisely what GSM changes. Throughput is set by when the engine
+  *retires* work, and issue timestamps do not observe that.
+- **Per-cluster imbalance.** The prediction averages per-tile cycles and
+  multiplies by the cluster count, which assumes every cluster is busy for the
+  whole kernel. Wave quantization and uneven tile cost both break that.
+
+Note also that BK=128 measures a *lower* issue rate than BK=64 (134-139 against
+124-127 cycles per issue) while being faster overall at every large shape, which
+the issue-rate account cannot explain either.
+
+## The instrument this calls for
+
+Timestamp MMA **completions** rather than issues. `tcgen05.commit` already
+signals an mbarrier when a chain retires; recording the clock when that barrier
+is observed would measure engine occupancy directly, which is the quantity
+`throughput = A x f` actually refers to. Combined with per-cluster spans rather
+than per-tile averages, that would make the prediction testable in the way this
+version is not.
+
+## Superseded: the original reading
+
 ## What it shows
 
 **BN=512 issues MMAs faster at every shape** - 8.6% faster at 4096, still 3.8%
