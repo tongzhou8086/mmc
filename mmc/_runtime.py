@@ -289,7 +289,7 @@ class Runtime:
         # kernel_params contains addresses into argument_storage, so retain both.
         return launch_args, argument_storage
 
-    def _build_bf16_launch_args(self, spec, a, b, out, stream):
+    def _build_bf16_launch_args(self, spec, a, b, out, stream, prof=None):
         m, k = a.shape
         n = b.shape[1]
         bf16_swizzle_elements = 128 // 2
@@ -312,6 +312,10 @@ class Runtime:
             ctypes.c_int(n),
             ctypes.c_int(k),
         ])
+        # instrumented kernels take a trailing buffer; null disables them, so
+        # the same cubin can also be timed
+        if prof is not None:
+            argument_storage.append(ctypes.c_void_p(prof.data_ptr()))
         kernel_params = (ctypes.c_void_p * len(argument_storage))(
             *[ctypes.addressof(arg) for arg in argument_storage]
         )
@@ -361,6 +365,13 @@ class Runtime:
             )
 
         launch_args, _argument_storage = self._bf16_launch_cache[key]
+        _cu(driver.cuLaunchKernel(*launch_args))
+
+    def launch_bf16_prof(self, spec, a, b, out, prof):
+        """Launch an instrumented BF16 kernel, writing its records into `prof`."""
+        stream = torch.cuda.current_stream(self.device_index).cuda_stream
+        launch_args, _storage = self._build_bf16_launch_args(
+            spec, a, b, out, stream, prof=prof)
         _cu(driver.cuLaunchKernel(*launch_args))
 
     def launch_mxfp8(self, spec, a, b, sfa, sfb, out):
