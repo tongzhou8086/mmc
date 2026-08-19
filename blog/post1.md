@@ -173,13 +173,14 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 ### 解决 RAW 停顿
 
-使用多个 TMA buffer 便可让 TMA load 和 MMA 操作并行起来，而无需互相等待同一个 buffer。下图演示使用两个 TMA buffer 的情况，实际Blackwell 上实现中，我们一般会使用更多的 TMA buffer。
+RAW 停顿来源于 read-after-write 数据依赖，减少停顿的方法则是预取（prefetch）数据，即 read 的时候同时开始下一轮的 write，这样可以减少下次 read 的时候的等待。这样的数据预取需要我们使用多个 TMA buffer，即当一个 MMA 开始时，与此同时，TMA load 可以同时开始往另一个 buffer 里面写入。
+下图演示使用两个 TMA buffer 的情况，实际具体用几个 TMA buffer 好取决于 MMA 和 TMA load 的时长比例。
 
 ![两份 TMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-tma-buffer-timeline.png)
 
 ### 解决 WAR 停顿
 
-类似的，我们通过使用两个 MMA buffer，便能够使得 MMA 操作和 tcgen05.ld 操作重叠起来 —— 各自操作不同的 MMA buffer，如下图所示：
+WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的依赖，在编译原理以及计算机体系结构中的标准解决方案就是让 write 写入一个新的 buffer，在计算机体系结构中，这个被称为 register renaming。于是这里我们通过增加一个 MMA buffer，便能够使得 MMA 操作和 tcgen05.ld 操作重叠起来 —— 各自操作不同的 MMA buffer，如下图所示：
 
 ![两份 TMA buffer 加两份 MMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-accumulator-timeline.png)
 
