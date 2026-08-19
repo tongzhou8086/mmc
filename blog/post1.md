@@ -41,14 +41,29 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 ### 2-CTA MMA
 
-<add some backhground here about 2 CTA MMA, Previously I have made the following graph before.>
+Blackwell 的 tcgen05 MMA 指令支持一种叫做 `cta_group::2` 的模式：相邻的两个 CTA 组成一个 cluster，共同完成同一条 MMA 指令。这带来的变化如下图所示。
+
+左边是不开启的情形：两个 CTA 各自独立地计算一块 BMxBN 的输出，各自都需要完整的 B tile —— 于是同一份 B 数据被从内存里读了两遍。右边是开启之后：两个 CTA 合起来计算一块 2BMxBN 的输出，A 天然地被切成两半（每个 CTA 各持有自己的那 BM 行），而 B 也被切成两半（每个 CTA 只持有 BN/2 列），MMA 单元则跨 cluster 去读取另一个 CTA 的那一半。同样大小的输出，B 只被读了一遍。
 
 <img width="751" height="396" alt="图片" src="https://github.com/user-attachments/assets/e80a51c8-aac1-45b0-991c-74ec8d791fce" />
+
+这一条优化带来两个后果，后文都会反复用到：
+
+* **算术强度提高**。回到前面那个算术强度的公式，分母里 B tile 的那一项从 `BK x BN x 2` 变成了 `BK x BN x 2 / 2`，同样的计算量只需要一半的 B 流量。注意分母里 A tile 那一项并没有变，所以算术强度是提高了，但并没有翻倍 —— 以 BM=128、BN=256 为例，它从 85.3 提高到 128 FLOP/byte。
+* **省出了 SMEM**。B 的驻留空间少了一半，腾出来的容量可以用来多配几个 TMA buffer，或者把 tile 配得更大 —— 这正是后文流水线设计里可以支配的资源。
 
 
 ### CTA Swizzle
 
-<explain what CTA swizzle is and how it improves L2 cache hit, you can reference or remake a nice illustration from triton: https://triton-lang.org/main/_images/grouped_vs_row_major_ordering.png>
+前面提到，output tile 是按某种顺序分配给各个 CTA 的。这个顺序不影响计算结果，但它决定了**同一时刻正在运行的那一批 CTA 会碰到哪些数据** —— 而这直接决定了 L2 的命中率。
+
+最直观的分配方式是 row-major，即按行依次往下发。问题在于，同时在跑的这一批 CTA 会落在同一行上，它们共享同一条 A 的行条，却各自需要一条不同的 B 的列条。换一种走法：先沿着一列往下走 GROUP_SIZE_M 个 tile，再换到下一列，走满一批之后再重新开始 —— 同一批 CTA 就落在一个比较方的矩形里，需要的 A 行条虽然变多了，B 列条却少得多。
+
+![row-major 与 grouped 两种分配顺序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/cta-swizzle.png)
+
+图中以 8x8 的 tile 网格、一批 8 个 CTA 为例：row-major 走法下，这 8 个 tile 需要 1 条 A 加 8 条 B，共 9 条；而 grouped 走法（GROUP_SIZE_M=4）下只需要 4 条 A 加 2 条 B，共 6 条。同样的计算量，需要同时驻留在 L2 里的数据少了三分之一。数据能命中 L2，TMA load 就回来得更快，MMA 也就更不容易因为等数据而停顿。
+
+GROUP_SIZE_M（后文简称 GSM）就是这里唯一的旋钮。它也不是越大越好：分组越深，一批 CTA 需要的 A 行条就越多，工作集重新变大，而且在矩阵边缘还会出现凑不满一组的情况。后文的性能测试里我们会实测 GSM = 8 / 12 / 16 三档。
 
 ### 程序的宏观框架
 
