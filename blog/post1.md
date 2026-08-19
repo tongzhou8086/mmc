@@ -248,13 +248,13 @@ B tile 之所以后面会除以 2，是因为我们默认了 2 CTA MMA 的开启
 后文的伪代码都基于这套原语书写。
 
 ### 第一种设计：BN256
-谈流水线设计，我们先确定 BN 的大小，因为 BM 是硬件设计死的，只能是 128，而 BK 不影响算术强度，只是影响数据操作的 granularity，是一个可选参数。而 BN 的大小则是决定了 accumulator 的大小，也影响算术强度。在第一个设计中，我们采用双 MMA buffer，这样在一个 MMA buffer 到了 draining 阶段的时候，与此同时，下一个 output tile 的 MMA 依然能够继续进行，只需要将数据保存在另一个 MMA buffer 中即可，这样便能实现 draining 和 MMA 操作的重叠。由于 TMEM 的大小是 128 行 x 512 列，所以 BN 设为 256，就可以放下两个 MMA buffer。
+第一种设计中，我们介绍一种 baseline 的设计，尽管 baseline，它已经使用多个 TMA buffer 来减少 RAW 停顿，以及两个 MMA buffer 来减少 WAR 停顿。由于 MMA buffer 的物理存储介质是 TMEM（128行 x 512列），而 BM 被固定位 128，于是自然可以得出单个 MMA buffer 的大小为 128 行 x 256 列。在基础设计中，每个 output tile 内部的 MMA 操作只会使用其中一个 MMA buffer，然后等到切换 output tile 时（即，外层循环迭代）便切换为另一个 MMA buffer 做 MMA，以此实现 tcgen05.ld（读取上一轮的 MMA buffer）和 MMA 的重叠。
 
-确定了 BN 的大小，我们再看一下其他 buffer 的配置，这里暂且将 BK 设为 64，于是在使用 2 CTA MMA 的情况下，一个 A Tile 和 B Tile 占用的空间分别是 16KB，一共便是 32KB，也就是一个 TMA buffer 的大小。在这个配置中，我们选择配置 6 个 TMA buffer，加上两个 store buffer，这样占用的 SMEM 空间正好是 192KB+32KB = 224KB，刚好在 227KB 的容量范围内。
+TMA buffer 我们也会配置多个，来减少 MMA issue 的数据等待，具体配置多少个，取决于 SMEM 空间有多大，以及如何在 TMA buffer 和 store buffer 之间分配，我们可以计算出，在 BM=128/BN=256/BK=64 的情况下，一个 A Tile 和 B Tile 占用的空间分别是 16KB，一共便是 32KB，也就是一个 TMA buffer 的大小。而一个 store buffer 的大小是 16KB。这里，我们选择配置 6 个 TMA buffer，加上 2 个 store buffer，这样占用的 SMEM 空间正好是 192KB+32KB = 224KB，刚好在 227KB 的容量范围内。
 
-tcgen05.ld buffer 的话，我们总是只会配置一个。一方面是因为 tcgen05.ld 是一个比较快的操作，即从 TMEM 中读取数据到 RMEM 中；；另外为了在 epilogue 期间尽早地释放 MMA buffer，我们也会使用大量使用寄存器来暂存 TMEM 数据，所以也配置不了多个。
+tcgen05.ld buffer 的话，我们总是只会配置一个，大小为 128 行 x 64 列，即每次从 MMA buffer 中读取 64 列数据。这里我们没有配置多个 tcgen05.ld buffer，而是让 epilogue warps 串行地进行 tcgen05.ld 和 stage 操作。
 
-确定了参数配置，我们再来看各种操作时序逻辑，这里我们使用上面这套原语来表达：
+确定了参数配置，我们再来看流水线的调度逻辑，这里我们使用上面这套原语来表达：
 
 ```text
 # ── 参数 ──────────────────────────────────────────────
@@ -318,7 +318,7 @@ for tile in my_output_tiles:
 
 从伪代码里也能读出这个设计最关键的一处安排：MMA warp 每换一个 output tile 就切换 MMA buffer，而 epilogue 在把最后一段读进寄存器之后就立刻 `make_free(mma_buffers[acc])`。两者合起来的效果是，一个 output tile 的 draining 只要在**下下个** output tile 开始前完成，MMA 就不会卡住。这个时间窗口和 K 的大小有关：K 越大窗口越大，K 越小则越可能造成 WAR 停顿。流水线设计的最终目标就是**最小停顿地吃满 MMA**。
 
-值得注意的是，同样的这一套逻辑也完全能够适配 BK=128 的情况，BK=128 与 BK=64 唯一的区别就是 TMA Buffer 从 6 个变为了 3 个，而逻辑部分完全不变。
+值得注意的是，同样的这一套逻辑也完全能够适配 BK=128 的情况，BK=128 与 BK=64 唯一的区别就是 TMA Buffer 从 6 个变为了 3 个，而逻辑部分完全不变 —— 这里我们把 BK 作为一个选配参数，有两种选择：64 和 128。
 
 #### 性能数字
 
@@ -331,23 +331,18 @@ for tile in my_output_tiles:
 ### 第二种设计：BN512 
 BN256 的设计其实已经非常流畅了：TMA buffer 有 6 个，应该能够流畅地将数据加载到 SMEM 中，这样 MMA 总是有操作数可以计算 —— 这一部分针对的是 RAW 停顿；此外 MMA buffer 也有两个，所以如果一个 output tile 的 epilogue 能在下下个 output tile 开始之前完成，WAR 停顿也就被藏了起来。两者合起来，理论上我们就可以持续不停地 issue MMA，这已经是一个非常流畅的设计了。
 
-不过，根据实际性能结果，我们发现，在比较大的方阵上，BN256 的性能停滞在了 1300T 左右。一个可能的原因是，尽管 MMA 的 issue 的确没什么停顿，但是每次只用了一半的 TMEM 做 accumulation 达到的算术强度还是不太够，也就是说，同样的数据量进来，它产生的计算量有限，于是，哪怕 MMA 的 issue 没有停顿，实际产生的计算量还是无法吃满 MMA Engine。
+不过，根据实际性能结果，我们发现，在比较大的方阵上，BN256 的性能停滞在了 1300T 左右。一个可能的原因是，尽管 MMA 的 issue 的确没什么停顿，但是每次只用了一半的 TMEM 做 accumulation 达到的算术强度还是不太够，也就是说，同样的数据量加载进来，它产生的计算量有限。
 
-于是在第二种设计中，我们换一种新的思路，即，把整个 TMEM 作为一个 MMA buffer 使用，其 BN 是 512，简单的计算我们可以发现，BN=512 下，每个 K tile 的数据量会变为 1.5 倍 —— 从 32KB 变成 48KB，而计算量则会变为两倍，这样会导致同样的数据量进来，能够产生更大的计算量，更有可能能够吃满 MMA engine。但是与此同时，只用了一个逻辑上的 MMA buffer 的话，就会导致在 epilogue draining 期间，后续的 MMA 无法进行 issue，需要等待这个 MMA buffer 被腾空以后才能够 issue 后续的 MMA，这就是典型的 WAR 停顿，发生在两个 output tile 交接的时候。简而言之，两者的区别总结如下：
+于是在第二种设计中，我们换一种新的思路，即，把整个 TMEM 作为一个 single MMA buffer 使用，其 BN 是 512，简单的计算我们可以发现，BN=512 下，每个 K tile 的数据量会变为 1.5 倍 —— 从 32KB 变成 48KB，而计算量则会变为两倍，这样会导致同样的数据量进来，能够产生更大的计算量。但是与此同时，只用了一个逻辑上的 MMA buffer 的话，就会导致在 epilogue draining 期间，后续的 MMA 无法进行 issue，需要等待这个 MMA buffer 被腾空以后才能够 issue 后续的 MMA，这就是典型的 WAR 停顿，发生在两个 output tile 交接的时候。算术强度的提高，本质上其实还是减少了 RAW 停顿，相当于可以复用片上的数据，而不是重新从内存或 L2 中加载，即，等待数据的平均时间减少了。但是与此同时换来了更多 WAR 停顿。由于 WAR 停顿发生在外层循环，而 RAW 停顿发生在内层循环，我们有理由相信，对于 k 迭代次数较多的情况，这应该能带来性能提升。
 
-**BN256 可以无停顿地持续 issue MMA，但是产生的计算量可能无法吃满硬件算力；BN512 通过加大 accumulation buffer 能够将 tensor core 的算力吃得更满，但是与此同时，在两个 output tile 交接的时候会重新引入 WAR 停顿。**
-
-我们先计算一下 A tile 和 B tile 现在分别的大小，BM 依然设为 128，BN 配成 512，BK 先取 64，套用前面的公式：
+我们再计算一下 TMA buffer 的大小和数量，BM 依然设为 128，BN 现在是 512，BK 先取 64，套用前面的公式：
 
 * A tile: BM × BK × 2 = 128 × 64 × 2 = **16KB**
 * B tile: BK × BN × 2 / 2 = 64 × 512 × 2 / 2 = **32KB**
 
-所以一个 TMA buffer（一个 A tile 加一个 B tile）是 **48KB**，比 BN256 时的 32KB 大了 50% —— 大出来的部分全在 B tile 上，因为 BN 翻倍了。
+所以一个 TMA buffer（一个 A tile 加一个 B tile）是 **48KB**，于是我们给 TMA buffer 配 **4 个**，共 192KB；store buffer 依然配 **2 个**，每个是 128 × 64 × 2 = 16KB，共 32KB。两者相加还是 224KB。
 
-SMEM 的容量决定了能配几个。我们给 TMA buffer 配 **4 个**，共 192KB；store buffer 依然配 **2 个**，每个是 128 × 64 × 2 = 16KB，共 32KB。两者相加还是 224KB。
-
-
-代码的同步逻辑如下，主要区别在于此时没有两个 MMA buffer 的互相切换了：
+代码的调度逻辑如下，主要区别在于此时没有两个 MMA buffer 的互相切换了：
 
 ```text
 # ── 参数 ──────────────────────────────────────────────
@@ -403,7 +398,7 @@ for tile in my_output_tiles:
         make_free_on_tma_done(store_buffers[b])
 ```
 
-和 BN256 版本对比，结构上其实只差了一处：`wait_until_free` 前面没有了 `acc = tile % NUM_ACC` 这一层轮转。只有一个 accumulator，所以下一个 output tile 的第一次 MMA 必须等到当前 tile 完全 drain 完才能发出，这就是前面说的「卡一下」。epilogue 本身则和 BN256 完全一样，仍然是 8 个 64 列的 chunk 依次读出、stage、store。
+和 BN256 版本对比，结构上其实只差了一处：`wait_until_free` 前面没有了 `acc = tile % NUM_ACC` 这一层轮转。只有一个 accumulator，所以下一个 output tile 的第一次 MMA 必须等到当前 tile 完全 drain 完才能发出，这就是前面说的多出来的 WAR 停顿。epilogue 本身则和 BN256 完全一样，仍然是 8 个 64 列的 chunk 依次读出、stage、store。
 
 #### 性能数字
 
@@ -414,12 +409,12 @@ BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果
 
 几点观察：
 
-* 相比 BN256，BN512 在稍大一些的方阵上确实能达到更高的性能 —— 稳定飚在了 1450T 左右。一个可能的解释是，方阵越大 K 维度也越大，Epilogue 所占的时间比例便相应缩小 —— BN512 让计算部分更快，代价是 Epilogue 带来的 WAR 停顿更难藏，所以正适合 K 比较大的情况。
+* 相比 BN256，BN512 在稍大一些的方阵上确实能达到高得多的性能 —— 稳定飚在了 1450T 左右。一个可能的解释是，方阵越大 K 维度也越大，Epilogue 所占的时间比例便相应缩小 —— BN512 让计算部分更快，代价是 Epilogue 带来的 WAR 停顿更难藏，所以正适合 K 比较大的情况。
 * GSM 在这里的作用比 BN256 明显得多：BK=128 在 20480 上从 GSM=8 的 1423 涨到 GSM=16 的 1468；BK=64 在 17408 上从 1316 涨到 1412。
 * 最好的一档（BK=128 + GSM=16）在 18 个尺寸中有 10 个跑赢了 cuBLAS。
 
 ### 第三种设计：BN512 加强版
-在上述的 BN512 基础设计中，epilogue 的部分还是每次从 TMEM 中 load 64 列数据，直到最后一列都 load 完成以后才释放完整的 MMA buffer，这会导致 epilogue 占据 MMA buffer 比较长的时间，也就把 WAR 停顿的窗口拉大了。在下面的新版设计中，我们会做两个方面的改进。首先，我们加大 tcgen05.ld buffer 的容量，使得它一次能存放下 128 行 x 256 列的数据 —— 共计 128KB tcgen05.ld 的结果，于是 tcgen05.ld buffer 的容量需要扩充到 128KB，即整个 SM 上一半的寄存器容量。我们先把这 128KB 的数据都加载到寄存器中以后，随即释放 MMA buffer 左边的一半，之后再对这 128KB 的数据进行 stage 和 TMA store 操作，以及后续的 load 另一半的 128KB 结果。这样设计的益处在于，MMA buffer 的其中一半（256 列）可以被提前释放，而非要等到整个 MMA buffer 数据都搬完以后才能释放。更早地释放可以使得左边一半的 MMA 可以先开始 issue，只要对应的 k tile 的数据已经到位，这样便能和 epilogue 的后续操作重叠起来，从而缩短 WAR 停顿。
+在上述的 BN512 基础设计中，epilogue 的部分还是每次从 TMEM 中 load 64 列数据，直到最后一列都 load 完成以后才释放完整的 MMA buffer，这会导致 epilogue 占据 MMA buffer 比较长的时间，也就把 WAR 停顿的窗口拉大了。在下面的新版设计中，我们会做两个方面的改进来进一步缩减 WAR 停顿。首先，我们加大 tcgen05.ld buffer 的容量，使得它一次能存放下 128 行 x 256 列的数据 —— 共计 128KB tcgen05.ld 的结果，于是 tcgen05.ld buffer 的容量需要扩充到 128KB，即整个 SM 上一半的寄存器容量。我们先把这 128KB 的数据都加载到寄存器中以后，随即释放 MMA buffer 左边的一半，之后再对这 128KB 的数据进行 stage 和 TMA store 操作，以及后续的 load 另一半的 128KB 结果。这样设计的益处在于，MMA buffer 的其中一半（256 列）可以被提前释放，而非要等到整个 MMA buffer 数据都搬完以后才能释放。更早地释放可以使得左边一半的 MMA 可以先开始 issue，只要对应的 k tile 的数据已经到位，这样便能和 epilogue 的后续操作重叠起来，从而缩短 WAR 停顿。
 
 #### 性能数字
 
