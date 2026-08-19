@@ -248,9 +248,9 @@ B tile 之所以后面会除以 2，是因为我们默认了 2 CTA MMA 的开启
 后文的伪代码都基于这套原语书写。
 
 ### 第一种设计：BN256
-第一种设计中，我们介绍一种 baseline 的设计，尽管 baseline，它已经使用多个 TMA buffer 来减少 RAW 停顿，以及两个 MMA buffer 来减少 WAR 停顿。由于 MMA buffer 的物理存储介质是 TMEM（128行 x 512列），而 BM 被固定位 128，于是自然可以得出单个 MMA buffer 的大小为 128 行 x 256 列。在基础设计中，每个 output tile 内部的 MMA 操作只会使用其中一个 MMA buffer，然后等到切换 output tile 时（即，外层循环迭代）便切换为另一个 MMA buffer 做 MMA，以此实现 tcgen05.ld（读取上一轮的 MMA buffer）和 MMA 的重叠。
+我们先介绍一种比较基础的设计，尽管基础，它已经使用多个 TMA buffer 来减少 RAW 停顿，以及使用两个 MMA buffer 来减少 WAR 停顿。由于 MMA buffer 的物理存储介质是 TMEM（128行 x 512列），而 BM 被固定位 128，于是自然可以得出单个 MMA buffer 的大小为 128 行 x 256 列。在基础设计中，每个 output tile 内部的 MMA 操作只会使用其中一个 MMA buffer，然后等到切换 output tile 时（即，外层循环迭代）便切换为另一个 MMA buffer 做 MMA，以此实现 tcgen05.ld（读取上一轮的 MMA buffer）和 MMA 的重叠。
 
-TMA buffer 我们也会配置多个，来减少 MMA issue 的数据等待，具体配置多少个，取决于 SMEM 空间有多大，以及如何在 TMA buffer 和 store buffer 之间分配，我们可以计算出，在 BM=128/BN=256/BK=64 的情况下，一个 A Tile 和 B Tile 占用的空间分别是 16KB，一共便是 32KB，也就是一个 TMA buffer 的大小。而一个 store buffer 的大小是 16KB。这里，我们选择配置 6 个 TMA buffer，加上 2 个 store buffer，这样占用的 SMEM 空间正好是 192KB+32KB = 224KB，刚好在 227KB 的容量范围内。
+TMA buffer 我们也会配置多个，来减少 MMA issue 的数据等待，具体配置多少个，取决于 SMEM 空间有多大，以及如何在 TMA buffer 和 store buffer 之间分配，我们可以计算出，在 BM=128/BN=256/BK=64 的情况下，一个 A Tile 和 B Tile 占用的空间分别是 16KB，一共便是 32KB，也就是一个 TMA buffer 的大小。而一个 store buffer 的大小是 16KB。这里，我们选择配置 6 个 TMA buffer，加上 2 个 store buffer，这样占用的 SMEM 空间正好是  `32*6 + 16*2 = 224KB`，刚好在 227KB 的容量范围内。
 
 tcgen05.ld buffer 的话，我们总是只会配置一个，大小为 128 行 x 64 列，即每次从 MMA buffer 中读取 64 列数据。这里我们没有配置多个 tcgen05.ld buffer，而是让 epilogue warps 串行地进行 tcgen05.ld 和 stage 操作。
 
