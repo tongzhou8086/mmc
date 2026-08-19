@@ -169,17 +169,15 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 * **RAW 停顿**：同一个 output tile，不同的 k tile 之间存在停顿（或者空挡），需要等待 TMA load 的结束。MMA 要读的那份数据得先由 TMA load 写进去，这是一个 true dependence（read after write）。
 * **WAR 停顿**：不同的 output tile 交接时，也存在空挡，需要等待 tcgen05.ld 的结束。MMA 要写的那块 accumulator 得先被 tcgen05.ld 读走，这是一个 anti dependence（write after read）。
 
-按它们发生的位置，也可以称为内层循环的停顿和外层循环的停顿。
+这两种依赖，其实正是前面同步法则的两半：「源 buffer 可读」说的是 true dependence 已经满足，「目的 buffer 可写」说的是 anti dependence 已经满足。后文的每一处设计，本质上都是在缩短这两类等待中的某一类。
 
-这两种依赖，其实正是前面那条判据的两半：「源 buffer 可读」说的是 true dependence 已经满足，「目的 buffer 可写」说的是 anti dependence 已经满足。后文的每一处设计，本质上都是在缩短这两类等待中的某一类。
-
-### 解决 RAW 停顿（内层）
+### 解决 RAW 停顿
 
 使用多个 TMA buffer 便可让 TMA load 和 MMA 操作并行起来，而无需互相等待同一个 buffer。下图演示使用两个 TMA buffer 的情况，实际Blackwell 上实现中，我们一般会使用更多的 TMA buffer。
 
 ![两份 TMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-tma-buffer-timeline.png)
 
-### 解决 WAR 停顿（外层）
+### 解决 WAR 停顿
 
 类似的，我们通过使用两个 MMA buffer，便能够使得 MMA 操作和 tcgen05.ld 操作重叠起来 —— 各自操作不同的 MMA buffer，如下图所示：
 
@@ -187,7 +185,11 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 这下 MMA 那一行从头到尾连成了一片，再没有空档 —— 而 MMA 能持续 issue，正是整个流水线编排追求的目标。后文第一种设计里的双 MMA buffer，做的就是这件事。
 
-### 到底需要几个 buffer？
+### 提高算术强度到底是什么？
+
+既然我们说，流水线调度的根本目标是减少 RAW 停顿和 WAR 停顿，但是前面我们又提高了提高算术强度，这俩者到底什么关系？事实上，提高算术强度本质上依然是减少了 RAW 停顿 —— 通过减少对内存（或 L2）的访问，更好地复用片上的数据，这本质上是使得 RAW 停顿减少了。
+
+### 到底需要几个 buffer？（WIP）
 
 上图中我们显示了，通过增加 TMA buffer 的数量，我们可以达到重叠 TMA load 和 MMA 操作的效果；同理，通过增加 MMA buffer 的数量，可以达到重叠 MMA 和 tcgen05.ld 的效果，那问题来了，到底需要几个 buffer 才能够实现完全的无等待？这实际上取决于生产操作和消费操作之间耗时的比例。
 
