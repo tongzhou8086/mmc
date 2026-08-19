@@ -39,6 +39,17 @@ TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储�
 
 上述的硬件单元的设计限制，就成了我们流水线设计的硬性限制，影响了各种 trade off。这里我们仅仅论述 Blackwell 新引入的硬件特性，而像传统的 GPU 架构内容，我们假设读者已经熟悉，不再赘述。
 
+### 2-CTA MMA
+
+<add some backhground here about 2 CTA MMA, Previously I have made the following graph before.>
+
+<img width="751" height="396" alt="图片" src="https://github.com/user-attachments/assets/e80a51c8-aac1-45b0-991c-74ec8d791fce" />
+
+
+### CTA Swizzle
+
+<explain what CTA swizzle is and how it improves L2 cache hit, you can reference or remake a nice illustration from triton: https://triton-lang.org/main/_images/grouped_vs_row_major_ordering.png>
+
 ### 程序的宏观框架
 
 在介绍流水线编排模型之前，我们先放出代码的宏观框架，以便为读者建立一个宏观的认知：我们在编什么程。以 CUDA 编程语言为例，众所周知，在 CUDA 编程中，我们需要指明每个线程的行为，同时一个 CTA 中的线程又能通过 SMEM 协作、交换数据等等。于 GEMM kernel 的表达而言，更加自然的方式是以 CTA 为视角来描述；具体在 CUDA 的层面，则需要再映射为每一个线程的操作。我们的程序框架如下：
