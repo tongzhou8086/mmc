@@ -47,13 +47,10 @@ Blackwell 的 tcgen05 MMA 指令支持一种叫做 `cta_group::2` 的模式：�
 
 <img width="751" height="396" alt="图片" src="https://github.com/user-attachments/assets/e80a51c8-aac1-45b0-991c-74ec8d791fce" />
 
-这一条优化带来三个后果，后文都会反复用到：
+这一条优化带来两个后果，后文都会反复用到：
 
-* **算术强度翻倍**。回到前面那个算术强度的公式，分母里 B tile 的那一项从 `BK x BN x 2` 变成了 `BK x BN x 2 / 2`，同样的计算量只需要一半的 B 流量。
+* **算术强度提高**。回到前面那个算术强度的公式，分母里 B tile 的那一项从 `BK x BN x 2` 变成了 `BK x BN x 2 / 2`，同样的计算量只需要一半的 B 流量。注意分母里 A tile 那一项并没有变，所以算术强度是提高了，但并没有翻倍 —— 以 BM=128、BN=256 为例，它从 85.3 提高到 128 FLOP/byte。
 * **省出了 SMEM**。B 的驻留空间少了一半，腾出来的容量可以用来多配几个 TMA buffer，或者把 tile 配得更大 —— 这正是后文流水线设计里可以支配的资源。
-* **单次 MMA issue 的计算量翻倍**。一条 MMA 指令覆盖的 M 从 128 变成了 256，issue 的次数不变，产生的计算量却翻了一倍。
-
-代价则是硬性的形状约束：一个 cluster 负责的输出是 2BM 行，于是 M 必须是 256 的整数倍（本文所有的 kernel 都有这个前提）。后文所有的设计都默认 2-CTA MMA 是开启的。
 
 
 ### CTA Swizzle
@@ -64,7 +61,7 @@ Blackwell 的 tcgen05 MMA 指令支持一种叫做 `cta_group::2` 的模式：�
 
 ![row-major 与 grouped 两种分配顺序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/cta-swizzle.png)
 
-图中以 8x8 的 tile 网格、一批 8 个 CTA 为例：row-major 走法下，这 8 个 tile 需要 1 条 A 加 8 条 B，共 9 条；而 grouped 走法（GROUP_SIZE_M=4）下只需要 4 条 A 加 2 条 B，共 6 条。同样的计算量，需要同时驻留在 L2 里的数据少了三分之一。数据能命中 L2，TMA load 就回来得更快，MMA 也就更不容易因为等数据而停顿 —— 所以 CTA swizzle 表面上只是换了个循环顺序，实际上是在给流水线减负。
+图中以 8x8 的 tile 网格、一批 8 个 CTA 为例：row-major 走法下，这 8 个 tile 需要 1 条 A 加 8 条 B，共 9 条；而 grouped 走法（GROUP_SIZE_M=4）下只需要 4 条 A 加 2 条 B，共 6 条。同样的计算量，需要同时驻留在 L2 里的数据少了三分之一。数据能命中 L2，TMA load 就回来得更快，MMA 也就更不容易因为等数据而停顿。
 
 GROUP_SIZE_M（后文简称 GSM）就是这里唯一的旋钮。它也不是越大越好：分组越深，一批 CTA 需要的 A 行条就越多，工作集重新变大，而且在矩阵边缘还会出现凑不满一组的情况。后文的性能测试里我们会实测 GSM = 8 / 12 / 16 三档。
 
