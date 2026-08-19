@@ -328,7 +328,7 @@ for tile in my_output_tiles:
 ### 第二种设计：BN512 
 BN256 的设计其实已经非常流畅了：TMA buffer 有 6 个，应该能够流畅地将数据加载到 SMEM 中，这样 MMA 总是有操作数可以计算 —— 这一半针对的是 RAW 停顿；此外 MMA buffer 也有两个，所以如果一个 output tile 的 epilogue 能在下下个 output tile 开始之前完成，WAR 停顿也就被藏了起来。两者合起来，理论上我们就可以持续不停地 issue MMA，这已经是一个非常流畅的设计了。
 
-不过，根据实际性能结果，我们发现，在比较大的方阵上，BN256 的性能停滞在了 1300T 左右。一个可能的原因是，尽管 MMA 的 issue 的确没什么停顿，但是每次只用了一半的 TMEM 做 accumulation 达到的算术强度还是不太够，也就是说，同样的数据量进来，它产生的计算量有限，于是，哪怕 MMA 的 issue 不卡顿，实际产生的计算量还是无法吃满 MMA Engine。
+不过，根据实际性能结果，我们发现，在比较大的方阵上，BN256 的性能停滞在了 1300T 左右。一个可能的原因是，尽管 MMA 的 issue 的确没什么停顿，但是每次只用了一半的 TMEM 做 accumulation 达到的算术强度还是不太够，也就是说，同样的数据量进来，它产生的计算量有限，于是，哪怕 MMA 的 issue 没有停顿，实际产生的计算量还是无法吃满 MMA Engine。
 
 于是在第二种设计中，我们换一种新的思路，即，把整个 TMEM 作为一个 MMA buffer 使用，其 BN 是 512，简单的计算我们可以发现，BN=512 下，每个 K tile 的数据量会变为 1.5 倍 —— 从 32KB 变成 48KB，而计算量则会变为两倍，这样会导致同样的数据量进来，能够产生更大的计算量，更有可能能够吃满 MMA engine。但是与此同时，只用了一个逻辑上的 MMA buffer 的话，就会导致在 epilogue draining 期间，后续的 MMA 无法进行 issue，需要等待这个 MMA buffer 被腾空以后才能够 issue 后续的 MMA，这就是典型的 WAR 停顿，发生在两个 output tile 交接的时候。简而言之，两者的区别总结如下：
 
