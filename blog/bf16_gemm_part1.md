@@ -75,7 +75,7 @@ $$ \text{num\_tiles} = \lceil M/BM \rceil \times \lceil N/BN \rceil $$
 
 一种简单的矩阵乘法实现方式是让一个 CTA 计算一个 output tile，这样需要 launch 的 CTA 的总数就正好是 num_tiles，即每一个 CTA 完成一个 output tile 的 accumulation 之后，将它写入内存，这个 CTA 便退出了，空出来的 SM 再由硬件调度下一个尚未开始的 CTA 上来执行。这样的问题在于，将 accumulation 结果写回内存的过程，没有和新一轮的计算重叠起来。所以实际上在高性能的矩阵乘法实现中，都会让一个 CTA 计算多个 output tile，这样在前一个 output tile 完成了 accumulation，在写入内存的同时，下一个 output tile 的计算便可以同时运行。举个例子，譬如 GPU 上有多少个 SM，我们就可以 launch 多少个 CTA（记作 num_CTA），再把 num_tiles 个 output tile 依次分给它们。这样的分配方式又被称为 persistent kernel，即这些 CTA 常驻在 SM 上，是 persistent 的，连着算许多个 output tile。
 
-在这种分配下，每个 CTA 拿到的 output tile 数量并不一定相等：num_tiles 未必能被 num_CTA 整除，前 num_tiles mod num_CTA 个 CTA 会多分到一个。外层循环的最大迭代次数、也即整个 kernel 的时长，是由多算一个的那些 CTA 决定的，即 ceil(num_tiles / num_CTA)。当 num_tiles 不是 num_CTA 的整数倍时，最后一轮里就有一部分 SM 是闲着的，这个损失通常被称为 wave quantization。
+在这种分配下，每个 CTA 拿到的 output tile 数量并不一定相等：num_tiles 未必能被 num_CTA 整除，前 num_tiles mod num_CTA 个 CTA 会多分到一个。外层循环的最大迭代次数、也即整个 kernel 的时长，是由多算一个的那些 CTA 决定的，即 ceil(num_tiles / num_CTA)。当 num_tiles 不是 num_CTA 的整数倍时，最后一轮里就有一部分 SM 是闲着的，这个损失通常被称为 [wave quantization](https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html#wave-quant)（NVIDIA 的 GEMM 性能指南里对它有专门的一节）。
 
 注意，在这样 persistent kernel 的 CTA 分配方式下，每个 CTA 到底被分配到哪些 output tiles 依然存在一个分配问题，即上面所说的 CTA swizzle 和一个 CTA 算多个 output tile 是一个正交的关系：CTA swizzle 决定的是 output tile 的**遍历顺序**，persistent kernel 决定的是把这个顺序上的第 i 个 tile 交给**哪一个 CTA**（最直接的做法就是交给第 i mod num_CTA 个 CTA）。如果假设一共有 8 个 SM，然后我们使用 8 个常驻 CTA，总共合起来计算 8x8 = 64 个 output tiles，每个 CTA 正好分到 8 个。那结合了 persistent kernel 以及 CTA swizzle 二者之后，每个 CTA 分配到的 output tiles 则如下图所示，左边是 row-major 顺序，右边是 GSM=4 的 grouped 顺序。
 
