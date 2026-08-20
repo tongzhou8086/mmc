@@ -424,6 +424,37 @@ BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果
 
 可以看出，在大尺寸上，这种新设计和前面的 BN512 基础版设计性能差不多，大差不差，但是对于相当小一些的方阵的性能提升还是非常显著的，譬如 5120、6144 等。
 
+### 第四种设计
+我们再呈现一种某种意义上结合了 BN256 和 BN512 的设计，但是它也是会同时使用两个 MMA buffer。这里的思路是，当一个 TMA buffer 被释放，状态转为可写时，我们并不一定总是要 overwrite 它所有的内容。在 BN256 的基础上，每当一个 TMA buffer 转为可写时，我们会做两轮轮转：
+
+* 第一次变为可写，overwrite 整个 buffer，load A tile 和 B tile
+* 第二次变为可写，只 overwrite B tile 的部分，load 另一个 BN256 panel 的 B tile
+
+即，k 循环还是像 BN256 设计里那样，但是在循环内部，我们会做如上的两轮轮转。假设我们的 TMA buffer 数量还是 6，然后 k 循环层会按每 6 个进行迭代，即：
+
+```
+# ── TMA Warp ─────────────────────────────────────────
+gk = 0
+...
+    for k in range(num_k/6):
+        for s in range(6):
+            wait_until_free(tma_buffers[s])
+            load A tile
+            load B tile
+            make_ready_on_tma_done(tma_buffers[s])
+
+        for s in range(6):
+            wait_until_free(tma_buffers[s])
+            load B tile for the other acc panel
+            make_ready_on_tma_done(tma_buffers[s])
+```
+
+MMA 的 issue 也变成了如下模式：先给 panel 0 issue 6 个连续的 k tile，然后再给 panel 1 issue 同样的 6 个连续的 k tile（B tile 数据不同），此时才会继续后续的 k，即下一批 6 轮的 k tile。
+在此过程中，可能在 6 个连续的 k tile 中间，一个 panel 的 MMA 就全部结束了，这时其对应的 epilogue 便可以开始，而无需等等另外一个 panel。这和我们现有的 splitacc-splitaddr 的设计一致，即 epilogue 在一个循环里，循环两次，每次等待和处理一个 panel。panel 0 被提前释放，提前完成 epilogue 的 draining（同样也可以使用 8 个 warps 进行 load256），然后对应的 MMA 那边，panel 0 的 MMA issue 又可以提前开始，而无需等待 panel 1。
+
+
+
+
 ### 工具
 在 Meshy 我们开发了以下两个与此话题相关的工具：
 * [MMComposer](https://mmcomposer.streamlit.app/)：一个 web app，上面 host 了各种我们开发的流水线编排设计，kernel 代码清晰易懂，对应的 host code 也有，可以一键下载，直接在 B200 上运行
