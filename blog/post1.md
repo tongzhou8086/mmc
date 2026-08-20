@@ -413,7 +413,7 @@ BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果
 * GSM 在这里的作用比 BN256 明显得多：BK=128 在 20480 上从 GSM=8 的 1423 涨到 GSM=16 的 1468；BK=64 在 17408 上从 1316 涨到 1412。
 * 最好的一档（BK=128 + GSM=16）在 18 个尺寸中有 10 个跑赢了 cuBLAS。
 
-### 第三种设计：BN512 加强版
+### 第三种设计：缩减 BN512 的 WAR 停顿
 在上述的 BN512 基础设计中，epilogue 的部分还是每次从 TMEM 中 load 64 列数据，直到最后一列都 load 完成以后才释放完整的 MMA buffer，这会导致 epilogue 占据 MMA buffer 比较长的时间，也就把 WAR 停顿的窗口拉大了。在下面的新版设计中，我们会做两个方面的改进来进一步缩减 WAR 停顿。首先，我们加大 tcgen05.ld buffer 的容量，使得它一次能存放下 128 行 x 256 列的数据 —— 共计 128KB tcgen05.ld 的结果，于是 tcgen05.ld buffer 的容量需要扩充到 128KB，即整个 SM 上一半的寄存器容量。我们先把这 128KB 的数据都加载到寄存器中以后，随即释放 MMA buffer 左边的一半，之后再对这 128KB 的数据进行 stage 和 TMA store 操作，以及后续的 load 另一半的 128KB 结果。这样设计的益处在于，MMA buffer 的其中一半（256 列）可以被提前释放，而非要等到整个 MMA buffer 数据都搬完以后才能释放。更早地释放可以使得左边一半的 MMA 可以先开始 issue，只要对应的 k tile 的数据已经到位，这样便能和 epilogue 的后续操作重叠起来，从而缩短 WAR 停顿。
 
 #### 性能数字
@@ -424,13 +424,13 @@ BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果
 
 可以看出，在大尺寸上，这种新设计和前面的 BN512 基础版设计性能差不多，大差不差，但是对于相当小一些的方阵的性能提升还是非常显著的，譬如 5120、6144 等。
 
-### 第四种设计
-我们再呈现一种某种意义上结合了 BN256 和 BN512 的设计，但是它也是会同时使用两个 MMA buffer。这里的思路是，当一个 TMA buffer 被释放，状态转为可写时，我们并不一定总是要 overwrite 它所有的内容。在 BN256 的基础上，每当一个 TMA buffer 转为可写时，我们会做两轮轮转：
+### 第四种设计：BN512 的算术强度 + BN256 的流水线深度
+我们再呈现一种某种意义上结合了 BN256 和 BN512 的设计，它也是会同时使用两个 MMA buffer，但是却和 BN256 保持了同样大小的 TMA buffer，即每个 32KB。这里的思路是，当一个 TMA buffer 被释放、状态转为可写时，我们并不一定总是要 overwrite 它所有的内容。试想这样一种思路：每当一个 TMA buffer 转为可写时，我们会做两轮轮转：
 
 * 第一次变为可写，overwrite 整个 buffer，load A tile 和 B tile
 * 第二次变为可写，只 overwrite B tile 的部分，load 另一个 BN256 panel 的 B tile
 
-即，k 循环还是像 BN256 设计里那样，但是在循环内部，我们会做如上的两轮轮转。假设我们的 TMA buffer 数量还是 6，然后 k 循环层会按每 6 个进行迭代，即：
+类似的，同样的这个 buffer 第三次和第四次变为可写时，我们做同样的轮转 —— 第三次 overwrite 整个 buffer而第四次只 overwrite B tile。用伪代码表达 TMA warp 的 k 层循环如下，大体还是像 BN256 设计里那样，但是在循环内部，我们会做如上的两轮子循环。以 TMA buffer 数量是 6 为例，于是两个子循环的迭代次数也都是 6，即：
 
 ```
 # ── TMA Warp ─────────────────────────────────────────
@@ -448,19 +448,14 @@ gk = 0
             load B tile for the other acc panel
             make_ready_on_tma_done(tma_buffers[s])
 ```
+上面的伪代码为了简化，我们假设 k 层迭代次数能够被 6 整除，于是没有 remainder loop。这里是 TMA 的逻辑，对应的 MMA 的 issue 也变成了如下模式：先给 MMA buffer 0 issue 6 个连续的 k tile，然后再给 MMA buffer 1 issue 同样的 6 个连续的 k tile（B tile 数据不同），此时才会继续后续的 k 迭代，即下一批 6 个的 k tile。
 
-MMA 的 issue 也变成了如下模式：先给 panel 0 issue 6 个连续的 k tile，然后再给 panel 1 issue 同样的 6 个连续的 k tile（B tile 数据不同），此时才会继续后续的 k，即下一批 6 轮的 k tile。
-在此过程中，可能在 6 个连续的 k tile 中间，一个 panel 的 MMA 就全部结束了，这时其对应的 epilogue 便可以开始，而无需等等另外一个 panel。这和我们现有的 splitacc-splitaddr 的设计一致，即 epilogue 在一个循环里，循环两次，每次等待和处理一个 panel。panel 0 被提前释放，提前完成 epilogue 的 draining（同样也可以使用 8 个 warps 进行 load256），然后对应的 MMA 那边，panel 0 的 MMA issue 又可以提前开始，而无需等待 panel 1。
-
-
+在此过程中，可能在 6 个连续的 k tile 中间，一个 panel 的 MMA 就全部结束了，这时其对应的 epilogue 便可以开始，而无需等等另外一个 panel。即，epilogue 在一个循环里，循环两次，每次等待和处理一个 panel。panel 0 被提前释放，提前完成 epilogue 的 draining（同样也可以使用 8 个 warps 进行 256 列的加载）。draining 结束以后，后续的 MMA 又可以马上往里面 issue，而无需等待 panel 1。
 
 
 #### 性能数字
+同样的设计依然适配于 6 种选配：BK=64/128 和 GSM=8/12/16。
 
-BK=64 和 BK=128 都实现了，各扫 GSM 8/12/16 三档 —— BK=128 时一个 slot 翻倍到
-64KB，所以 ring 是 3 层而不是 6 层，但仍然比第三种设计在 BK=128 的 2 层深。
-
-![BN=512 两轮轮转性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/perf-bn512-2round.png)
 
 绝对值仍然不要和前几节直接比（节点不同，看 cuBLAS 那一列换算）。为了能够比较，第三种
 设计在同一次运行、同一进程里交错打乱重测了一遍。两者各取最优配置：
