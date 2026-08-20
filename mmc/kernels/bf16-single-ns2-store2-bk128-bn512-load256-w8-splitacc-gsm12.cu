@@ -23,20 +23,22 @@
 // the MMA side only the k == 0 iteration waits, panel by panel, interleaved with
 // that panel's MMA issue. Same idea as single-ns4-store3-bk128-bn384-splitacc2.
 //
-// This variant splits the data-ready signal the same way the accumulator-free
-// barrier is already split: one per 256-column MMA panel. The MMA warp signals
-// panel 0's data-ready right after panel 0's last-k MMAs, before it issues
-// panel 1's, so the epilogue starts draining panel 0 without waiting for panel
-// 1 to finish accumulating. The epilogue waits per panel, immediately before
-// the outer-loop iteration that drains that panel.
-//
-// The cost is one branch inside the k loop, on a k == num_k - 1 test that is
-// cheap and perfectly predicted.
-//
-// Adapted from bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc.cu, which
-// is otherwise identical. It does not yet
+// Adapted from bf16-single-ns4-store2-bk64-bn512-load256-w8.cu, which is
+// otherwise identical. It does not yet
 // use cuda-mxfp8.cuh; the data-type-agnostic helpers will be split out of that
 // header and shared with the BF16 kernels separately.
+//
+// BK=128 variant of the split-accumulator-barrier kernel. Doubling BK doubles
+// the bytes per ring slot, so the ring drops from 4 slots to 2 to keep the same
+// 192 KB of staging. Requires K % 128 == 0.
+//
+// The split accumulator barriers should have more to work with here: panel 0's
+// free barrier arrives a whole panel-drain before panel 1's, and with BK=128
+// each MMA the freed panel can start on covers twice the K it did before, so
+// there is twice as much accumulation to overlap with panel 1's drain.
+//
+// A is fetched as two 64-element K chunks, because 128B swizzle caps a TMA box
+// at 64 BF16 elements in the contiguous dimension.
 //
 // Launch contract, mirrored by Runtime.launch_bf16:
 //   grid    = sm_count - sm_count % CTA_GROUP   (persistent, EPILOGUE_OVERLAP)
@@ -52,9 +54,9 @@
 // ── User-tunable constants (the webui substitutes these) ────────────
 constexpr int BM           = 128;
 constexpr int BN           = 512;
-constexpr int BK           = 64;
-constexpr int NS           = 6;       // multi-stage SMEM ring depth
-constexpr int GROUP_SIZE_M = 16;       // CTA-swizzle chunk (1 = no swizzle)
+constexpr int BK           = 128;
+constexpr int NS           = 2;       // multi-stage SMEM ring depth
+constexpr int GROUP_SIZE_M = 12;       // CTA-swizzle chunk (1 = no swizzle)
 constexpr int NUM_WARPS    = 8;       // total warps per CTA
 constexpr int TCGEN05_LD_WIDTH = 8;  // TMEM->reg epilogue load width: 8 or 16 (32-bit elems per lane)
 constexpr int EPILOGUE_OVERLAP = 1;  // 1 = persistent 2-CTA cluster + epilogue/K-loop overlap
@@ -75,17 +77,20 @@ constexpr int SWIZZLE_ROW_BYTES = 128;               // one 128B-swizzle atom ro
 constexpr int STORE_N          = 64;                 // TMA-store chunk width
 constexpr int TMA_STORE_STAGES = 2;                  // TMA-store SMEM buffers
 
-// Per-stage SMEM per CTA: A = BM*BK*2 = 16 KB, B = BN_PANEL_LOCAL*BK*2 = 16 KB.
-//
-// A slot holds A plus ONE accumulator panel's worth of B, not both panels'.
-// The slot is filled twice per visit: round 1 writes A and panel 0's B, round 2
-// overwrites only B with panel 1's, reusing the A that is already resident. So
-// A is fetched once per two panels, giving BN=512's arithmetic intensity while
-// the slot stays 32 KB - which is why six of them fit in the same SMEM that
-// held four 48 KB slots. Deeper ring, same intensity.
-constexpr int A_SLOT_BYTES = BM       * BK * BF16_BYTES;       // 16 KB
-constexpr int B_SLOT_BYTES = (BN / 2 / CTA_GROUP) * BK * BF16_BYTES;  // one panel
-constexpr int SLOT_BYTES   = A_SLOT_BYTES + B_SLOT_BYTES;      // 32 KB / slot
+// Per-stage SMEM per CTA: A = BM*BK*2 = 16 KB; B = BN_LOCAL*BK*2 = 16 KB.
+// Total 32 KB / stage / CTA — half of ch07's 48 KB / stage / CTA.
+constexpr int A_SLOT_BYTES = BM       * BK * BF16_BYTES;       // 32 KB
+constexpr int B_SLOT_BYTES = BN_LOCAL * BK * BF16_BYTES;       // 64 KB
+constexpr int SLOT_BYTES   = A_SLOT_BYTES + B_SLOT_BYTES;      // 96 KB / slot
+
+// 128B swizzle caps a TMA box at 128 bytes in the contiguous dimension, which
+// is 64 BF16 elements - so A is fetched as BK/64 chunks of BM x 64, laid out
+// back to back, and the MMA descriptor steps between them.
+constexpr int A_K_CHUNK       = SWIZZLE_ROW_BYTES / BF16_BYTES;   // 64
+constexpr int A_CHUNKS        = BK / A_K_CHUNK;                   // 2
+constexpr int A_CHUNK_BYTES   = BM * A_K_CHUNK * BF16_BYTES;      // 16 KB
+constexpr int MMAS_PER_CHUNK  = A_K_CHUNK / MMA_K;                // 4
+static_assert(A_CHUNKS * A_K_CHUNK == BK, "BK must be a multiple of 64");
 
 
 // ── Important: dynamic SMEM is used in TWO non-overlapping phases ──
@@ -338,7 +343,9 @@ __device__ __forceinline__ void issue_mma_chain(
 {
     #pragma unroll
     for (int kk = 0; kk < K_MMAS; kk++) {
-        const uint64_t a_desc = make_desc(a_base_slot + kk * MMA_K * BF16_BYTES);
+        const uint64_t a_desc = make_desc(
+            a_base_slot + (kk / MMAS_PER_CHUNK) * A_CHUNK_BYTES
+            + (kk % MMAS_PER_CHUNK) * MMA_K * BF16_BYTES);
         const uint64_t b_desc = make_desc_K_major(
             b_base_slot + kk * MMA_K * SWIZZLE_ROW_BYTES, BK * SWIZZLE_ROW_BYTES);
         const bool first_ever = first_k_tile && (kk == 0);
@@ -458,98 +465,99 @@ __device__ __forceinline__ void matmul_cluster_impl(
 
         if (warp_id == 0 && elect_sync()) {
             uint32_t compute_buffer_free_phase[NS] = {};
-            int slot_base = 0;          // continues across output tiles
+            long gk = 0;
             for (int ti = 0; ti < num_my; ti++) {
                 int base_m, base_n, local_m, local_n;
                 map_off(ti, base_m, base_n, local_m, local_n);
-                // Two rounds over each batch of NS k-tiles. Round 1 fills the
-                // whole slot; round 2 overwrites only B, so the A already in
-                // the slot is reused by the second panel. The last batch may
-                // be short, since num_k need not divide NS.
-                for (int kb = 0; kb < num_k; kb += NS) {
-                    const int cnt = (num_k - kb < NS) ? (num_k - kb) : NS;
-                    for (int round = 0; round < 2; round++) {
-                        for (int i = 0; i < cnt; i++) {
-                            const int k = kb + i;
-                            const int slot = (slot_base + i) % NS;
-                            uint32_t compute_buffer_free_addr =
-                                (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[slot]);
-                            uint32_t compute_data_ready_cta0 =
-                                mbarrier_addr_in_cta0(mbar_compute_data_ready[slot]);
-                            wait_phase(compute_buffer_free_addr,
-                                       compute_buffer_free_phase[slot]);
-                            if (round == 0)
-                                tma_2d_load_g2(A_base(slot), A_tmap, k * BK,
-                                               local_m, compute_data_ready_cta0);
-                            #pragma unroll
-                            for (int n = 0; n < BN_PANEL_LOCAL; n += 64) {
-                                tma_2d_load_g2(
-                                    B_base(slot) + n * BK * BF16_BYTES,
-                                    B_tmap,
-                                    base_n + round * BN_PANEL
-                                           + cta_rank * BN_PANEL_LOCAL + n,
-                                    k * BK,
-                                    compute_data_ready_cta0);
-                            }
-                            signal_on_bytes_loaded(
-                                compute_data_ready_cta0,
-                                round == 0 ? SLOT_BYTES : B_SLOT_BYTES);
-                            compute_buffer_free_phase[slot] ^= 1;
+                for (int k = 0; k < num_k; k++) {
+                    int slot = gk % NS;
+                    uint32_t compute_buffer_free_addr =
+                        (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[slot]);
+                    uint32_t compute_data_ready_cta0 =
+                        mbarrier_addr_in_cta0(mbar_compute_data_ready[slot]);
+                    wait_phase(compute_buffer_free_addr, compute_buffer_free_phase[slot]);
+                    #pragma unroll
+                    for (int c = 0; c < A_CHUNKS; c++) {
+                        tma_2d_load_g2(A_base(slot) + c * A_CHUNK_BYTES, A_tmap,
+                                       k * BK + c * A_K_CHUNK, local_m,
+                                       compute_data_ready_cta0);
+                    }
+                    #pragma unroll
+                    for (int panel = 0; panel < 2; panel++) {
+                        #pragma unroll
+                        for (int n = 0; n < BN_PANEL_LOCAL; n += 64) {
+                            tma_2d_load_g2(
+                                B_base(slot) + (panel * BN_PANEL_LOCAL + n) * BK * BF16_BYTES,
+                                B_tmap,
+                                base_n + panel * BN_PANEL + cta_rank * BN_PANEL_LOCAL + n,
+                                k * BK,
+                                compute_data_ready_cta0);
                         }
                     }
-                    slot_base = (slot_base + cnt) % NS;
+                    signal_on_bytes_loaded(compute_data_ready_cta0, SLOT_BYTES);
+                    compute_buffer_free_phase[slot] ^= 1;
+                    gk++;
                 }
             }
         } else if (cta_rank == 0 && warp_id == 1 && elect_sync()) {
             uint32_t compute_data_ready_phase[NS] = {};
             uint32_t tmem_panel_free_phase[2] = {};
-            int slot_base = 0;          // continues across output tiles
+            long gk = 0;
             for (int ti = 0; ti < num_my; ti++) {
+                const int buf = 0;
                 uint32_t d_tmem = taddr;
-                // The same two rounds the TMA warp uses: panel 0 consumes this
-                // batch of k-tiles, then panel 1 consumes the same k-tiles from
-                // the slots whose B half has meanwhile been refilled. The loop
-                // structure alone says which round and which panel we are in -
-                // no extra state, and no second barrier: the slot's ready/free
-                // pair is just used twice per batch.
-                for (int kb = 0; kb < num_k; kb += NS) {
-                    const int cnt = (num_k - kb < NS) ? (num_k - kb) : NS;
-                    for (int panel = 0; panel < 2; panel++) {
-                        for (int i = 0; i < cnt; i++) {
-                            const int k = kb + i;
-                            const int slot = (slot_base + i) % NS;
-                            const uint32_t dr = (uint32_t)__cvta_generic_to_shared(
-                                &mbar_compute_data_ready[slot]);
-                            const uint32_t bf = (uint32_t)__cvta_generic_to_shared(
-                                &mbar_compute_buffer_free[slot]);
-                            wait_phase(dr, compute_data_ready_phase[slot]);
-                            if (k == 0) {
-                                // only the first k-tile writes a fresh
-                                // accumulator, so only it waits for the drain
-                                wait_phase(
-                                    (uint32_t)__cvta_generic_to_shared(
-                                        &mbar_tmem_panel_free[panel]),
-                                    tmem_panel_free_phase[panel]);
-                                tmem_panel_free_phase[panel] ^= 1;
-                            }
-                            tcgen05_fence_after_thread_sync();
-                            // both panels read B from the same offset: a slot
-                            // only ever holds one panel's B at a time
-                            issue_mma_chain(d_tmem + panel * BN_PANEL,
-                                            A_base(slot),
-                                            B_base(slot),
-                                            idesc,
-                                            /*first_k_tile=*/ k == 0);
-                            if (k == num_k - 1)
-                                signal_on_mma_completion(
-                                    (uint32_t)__cvta_generic_to_shared(
-                                        &mbar_tmem_data_ready[panel]), cta_mask);
-                            signal_on_mma_completion(bf, cta_mask);
-                            compute_data_ready_phase[slot] ^= 1;
-                        }
+                for (int k = 0; k < num_k; k++) {
+                    int slot = gk % NS;
+                    uint32_t compute_data_ready_addr =
+                        (uint32_t)__cvta_generic_to_shared(&mbar_compute_data_ready[slot]);
+                    uint32_t compute_buffer_free_addr =
+                        (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[slot]);
+                    wait_phase(compute_data_ready_addr, compute_data_ready_phase[slot]);
+                    if (k == 0) {
+                        // Each 256-column panel has its own free barrier, so this
+                        // panel's MMAs start as soon as the epilogue has pulled
+                        // this panel out of TMEM, without waiting for the other
+                        // panel's drain. Only k == 0 writes a fresh accumulator,
+                        // so only k == 0 waits.
+                        wait_phase(
+                            (uint32_t)__cvta_generic_to_shared(&mbar_tmem_panel_free[0]),
+                            tmem_panel_free_phase[0]);
+                        tmem_panel_free_phase[0] ^= 1;
+                        tcgen05_fence_after_thread_sync();
+                        issue_mma_chain(d_tmem,
+                                        A_base(slot),
+                                        B_base(slot),
+                                        idesc,
+                                        /*first_k_tile=*/ true);
+
+                        wait_phase(
+                            (uint32_t)__cvta_generic_to_shared(&mbar_tmem_panel_free[1]),
+                            tmem_panel_free_phase[1]);
+                        tmem_panel_free_phase[1] ^= 1;
+                        tcgen05_fence_after_thread_sync();
+                        issue_mma_chain(d_tmem + BN_PANEL,
+                                        A_base(slot),
+                                        B_base(slot) + BN_PANEL_LOCAL * BK * BF16_BYTES,
+                                        idesc,
+                                        /*first_k_tile=*/ true);
+                    } else {
+                        tcgen05_fence_after_thread_sync();
+                        issue_mma_chain(d_tmem,
+                                        A_base(slot),
+                                        B_base(slot),
+                                        idesc,
+                                        /*first_k_tile=*/ false);
+                        issue_mma_chain(d_tmem + BN_PANEL,
+                                        A_base(slot),
+                                        B_base(slot) + BN_PANEL_LOCAL * BK * BF16_BYTES,
+                                        idesc,
+                                        /*first_k_tile=*/ false);
                     }
-                    slot_base = (slot_base + cnt) % NS;
+                    signal_on_mma_completion(compute_buffer_free_addr, cta_mask);
+                    compute_data_ready_phase[slot] ^= 1;
+                    gk++;
                 }
+                signal_on_mma_completion((uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[buf]), cta_mask);
             }
         } else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {
             // Contract for the shared overlap-drain fragment: cluster tier writes
@@ -572,6 +580,9 @@ __device__ __forceinline__ void matmul_cluster_impl(
                 int base_m, base_n, local_m, local_n;
                 const int buf = 0;
                 map_off(ti, base_m, base_n, local_m, local_n);
+                wait_phase((uint32_t)__cvta_generic_to_shared(&mbar_tmem_data_ready[buf]), full[buf]);
+                full[buf] ^= 1;
+                tcgen05_fence_after_thread_sync();
                 const uint32_t trow =
                     (taddr + buf * BN) + ((uint32_t)(cta_rank * BM + row_warp * 32) << 16);
                 constexpr int LDW = TCGEN05_LD_WIDTH;
@@ -598,16 +609,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
 
                     #pragma unroll
                     for (int load = 0; load < NUM_LOADS; load++) {
-                        // Each panel has its own data-ready signal, so wait for
-                        // just this panel: panel 0 drains while panel 1 is still
-                        // accumulating.
-                        wait_phase(
-                            (uint32_t)__cvta_generic_to_shared(
-                                &mbar_tmem_data_ready[load]),
-                            full[load]);
-                        full[load] ^= 1;
-                        tcgen05_fence_after_thread_sync();
-
                         // t[c] holds this column group's 32 columns of chunk c.
                         float t[CHUNKS_PER_LOAD][LD_REGS];
                         #pragma unroll

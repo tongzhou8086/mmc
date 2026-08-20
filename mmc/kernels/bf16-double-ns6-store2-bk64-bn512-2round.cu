@@ -458,6 +458,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
 
         if (warp_id == 0 && elect_sync()) {
             uint32_t compute_buffer_free_phase[NS] = {};
+            int slot_base = 0;          // continues across output tiles
             for (int ti = 0; ti < num_my; ti++) {
                 int base_m, base_n, local_m, local_n;
                 map_off(ti, base_m, base_n, local_m, local_n);
@@ -470,7 +471,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
                     for (int round = 0; round < 2; round++) {
                         for (int i = 0; i < cnt; i++) {
                             const int k = kb + i;
-                            const int slot = i;      // same slot in both rounds
+                            const int slot = (slot_base + i) % NS;
                             uint32_t compute_buffer_free_addr =
                                 (uint32_t)__cvta_generic_to_shared(&mbar_compute_buffer_free[slot]);
                             uint32_t compute_data_ready_cta0 =
@@ -496,11 +497,13 @@ __device__ __forceinline__ void matmul_cluster_impl(
                             compute_buffer_free_phase[slot] ^= 1;
                         }
                     }
+                    slot_base = (slot_base + cnt) % NS;
                 }
             }
         } else if (cta_rank == 0 && warp_id == 1 && elect_sync()) {
             uint32_t compute_data_ready_phase[NS] = {};
             uint32_t tmem_panel_free_phase[2] = {};
+            int slot_base = 0;          // continues across output tiles
             for (int ti = 0; ti < num_my; ti++) {
                 uint32_t d_tmem = taddr;
                 // The same two rounds the TMA warp uses: panel 0 consumes this
@@ -514,7 +517,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
                     for (int panel = 0; panel < 2; panel++) {
                         for (int i = 0; i < cnt; i++) {
                             const int k = kb + i;
-                            const int slot = i;      // same slot in both rounds
+                            const int slot = (slot_base + i) % NS;
                             const uint32_t dr = (uint32_t)__cvta_generic_to_shared(
                                 &mbar_compute_data_ready[slot]);
                             const uint32_t bf = (uint32_t)__cvta_generic_to_shared(
@@ -545,6 +548,7 @@ __device__ __forceinline__ void matmul_cluster_impl(
                             compute_data_ready_phase[slot] ^= 1;
                         }
                     }
+                    slot_base = (slot_base + cnt) % NS;
                 }
             }
         } else if (warp_id >= 4 && warp_id < NUM_WARPS + 4) {

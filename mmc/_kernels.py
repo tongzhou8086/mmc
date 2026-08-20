@@ -129,6 +129,12 @@ BF16_KERNELS = (
         "bf16-double-ns6-store2-bk64-bn512-2round", 64, 384, 230400,
         m_multiple=256, n_multiple=512,
     ),
+    # BK=128 form of the same idea: the slot doubles to 64 KB so the ring is
+    # three deep rather than six, still deeper than design 3's two at BK=128.
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round", 128, 384, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
     KernelSpec(
         "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-splitdr",
         64, 384, 230400, m_multiple=256, n_multiple=512,

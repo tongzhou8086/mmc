@@ -52,9 +52,9 @@
 // ── User-tunable constants (the webui substitutes these) ────────────
 constexpr int BM           = 128;
 constexpr int BN           = 512;
-constexpr int BK           = 64;
-constexpr int NS           = 6;       // multi-stage SMEM ring depth
-constexpr int GROUP_SIZE_M = 16;       // CTA-swizzle chunk (1 = no swizzle)
+constexpr int BK           = 128;
+constexpr int NS           = 3;       // multi-stage SMEM ring depth
+constexpr int GROUP_SIZE_M = 8;       // CTA-swizzle chunk (1 = no swizzle)
 constexpr int NUM_WARPS    = 8;       // total warps per CTA
 constexpr int TCGEN05_LD_WIDTH = 8;  // TMEM->reg epilogue load width: 8 or 16 (32-bit elems per lane)
 constexpr int EPILOGUE_OVERLAP = 1;  // 1 = persistent 2-CTA cluster + epilogue/K-loop overlap
@@ -77,6 +77,10 @@ constexpr int TMA_STORE_STAGES = 2;                  // TMA-store SMEM buffers
 
 // Per-stage SMEM per CTA: A = BM*BK*2 = 16 KB, B = BN_PANEL_LOCAL*BK*2 = 16 KB.
 //
+// BK=128 variant: doubling BK doubles the bytes per slot, so the ring is three
+// slots rather than six. Design 3 at BK=128 gets only two, so the batch that
+// covers panel 1's drain is still 3 k-tiles against its 1.
+//
 // A slot holds A plus ONE accumulator panel's worth of B, not both panels'.
 // The slot is filled twice per visit: round 1 writes A and panel 0's B, round 2
 // overwrites only B with panel 1's, reusing the A that is already resident. So
@@ -86,6 +90,15 @@ constexpr int TMA_STORE_STAGES = 2;                  // TMA-store SMEM buffers
 constexpr int A_SLOT_BYTES = BM       * BK * BF16_BYTES;       // 16 KB
 constexpr int B_SLOT_BYTES = (BN / 2 / CTA_GROUP) * BK * BF16_BYTES;  // one panel
 constexpr int SLOT_BYTES   = A_SLOT_BYTES + B_SLOT_BYTES;      // 32 KB / slot
+
+// 128B swizzle caps a TMA box at 128 bytes in the contiguous dimension, which
+// is 64 BF16 elements - so A is fetched as BK/64 chunks of BM x 64, laid out
+// back to back, and the MMA descriptor steps between them.
+constexpr int A_K_CHUNK       = SWIZZLE_ROW_BYTES / BF16_BYTES;   // 64
+constexpr int A_CHUNKS        = BK / A_K_CHUNK;                   // 2
+constexpr int A_CHUNK_BYTES   = BM * A_K_CHUNK * BF16_BYTES;      // 16 KB
+constexpr int MMAS_PER_CHUNK  = A_K_CHUNK / MMA_K;                // 4
+static_assert(A_CHUNKS * A_K_CHUNK == BK, "BK must be a multiple of 64");
 
 
 // ── Important: dynamic SMEM is used in TWO non-overlapping phases ──
@@ -338,7 +351,9 @@ __device__ __forceinline__ void issue_mma_chain(
 {
     #pragma unroll
     for (int kk = 0; kk < K_MMAS; kk++) {
-        const uint64_t a_desc = make_desc(a_base_slot + kk * MMA_K * BF16_BYTES);
+        const uint64_t a_desc = make_desc(
+            a_base_slot + (kk / MMAS_PER_CHUNK) * A_CHUNK_BYTES
+            + (kk % MMAS_PER_CHUNK) * MMA_K * BF16_BYTES);
         const uint64_t b_desc = make_desc_K_major(
             b_base_slot + kk * MMA_K * SWIZZLE_ROW_BYTES, BK * SWIZZLE_ROW_BYTES);
         const bool first_ever = first_k_tile && (kk == 0);
@@ -478,9 +493,14 @@ __device__ __forceinline__ void matmul_cluster_impl(
                                 mbarrier_addr_in_cta0(mbar_compute_data_ready[slot]);
                             wait_phase(compute_buffer_free_addr,
                                        compute_buffer_free_phase[slot]);
-                            if (round == 0)
-                                tma_2d_load_g2(A_base(slot), A_tmap, k * BK,
-                                               local_m, compute_data_ready_cta0);
+                            if (round == 0) {
+                                #pragma unroll
+                                for (int c = 0; c < A_CHUNKS; c++)
+                                    tma_2d_load_g2(
+                                        A_base(slot) + c * A_CHUNK_BYTES, A_tmap,
+                                        k * BK + c * A_K_CHUNK, local_m,
+                                        compute_data_ready_cta0);
+                            }
                             #pragma unroll
                             for (int n = 0; n < BN_PANEL_LOCAL; n += 64) {
                                 tma_2d_load_g2(
