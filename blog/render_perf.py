@@ -48,6 +48,16 @@ SERIES_GSM = [
 ]
 
 
+# The fourth design is BK=64 only, so it carries three configurations rather
+# than six: cuBLAS plus GSM 8/12/16.
+SERIES_2ROUND = [
+    ("torch.matmul (cuBLAS)", "#b7bfc9", 4),
+    ("BK=64  GSM=8", "#c3d3e2", 1),
+    ("BK=64  GSM=12", "#8babc8", 2),
+    ("BK=64  GSM=16", "#4f7396", 3),
+]
+
+
 def read_rows(heading, ncols=3):
     """Rows under a heading as (shape, v1, ..., vn).
 
@@ -127,6 +137,10 @@ def main():
               "BN=512 splitacc · GSM sweep, both BK settings",
               OUTDIR / "perf-bn512-splitacc",
               series=SERIES_GSM, figsize=(14.2, 5.4))
+    bar_chart(read_rows("## BN=512 两轮轮转（第四种设计）", ncols=4),
+              "BN=512 two-round slots · GSM sweep, BK=64",
+              OUTDIR / "perf-bn512-2round",
+              series=SERIES_2ROUND, figsize=(13.0, 5.2))
 
 
 if __name__ == "__main__":

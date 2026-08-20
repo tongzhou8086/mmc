@@ -120,6 +120,15 @@ BF16_KERNELS = (
     # Split data-ready as well as split accumulator-free: panel 0's data-ready
     # fires right after its last-k MMAs, before panel 1's are issued, so the
     # epilogue drains panel 0 while panel 1 is still accumulating.
+    # Fourth design: BN=512's arithmetic intensity with BN=256's ring depth.
+    # A slot holds A plus one accumulator panel's B, so it is 32 KB and six fit
+    # where four 48 KB slots did. Each slot is filled twice per visit - round 1
+    # writes A and panel 0's B, round 2 overwrites only B for panel 1, reusing
+    # the resident A - so A is fetched once per two panels.
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round", 64, 384, 230400,
+        m_multiple=256, n_multiple=512,
+    ),
     KernelSpec(
         "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-splitdr",
         64, 384, 230400, m_multiple=256, n_multiple=512,
