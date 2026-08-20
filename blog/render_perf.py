@@ -48,6 +48,19 @@ SERIES_GSM = [
 ]
 
 
+# The fourth design carries the same six configurations, but GSM=20 was never
+# swept for it, so the columns are packed 1..6 instead of skipping 4 and 8.
+SERIES_2ROUND = [
+    ("torch.matmul (cuBLAS)", "#b7bfc9", 7),
+    ("BK=64  GSM=8", "#c3d3e2", 1),
+    ("BK=64  GSM=12", "#8babc8", 2),
+    ("BK=64  GSM=16", "#4f7396", 3),
+    ("BK=128  GSM=8", "#b3d2b7", 4),
+    ("BK=128  GSM=12", "#7aa881", 5),
+    ("BK=128  GSM=16", "#41704a", 6),
+]
+
+
 def read_rows(heading, ncols=3):
     """Rows under a heading as (shape, v1, ..., vn).
 
@@ -127,6 +140,10 @@ def main():
               "BN=512 splitacc · GSM sweep, both BK settings",
               OUTDIR / "perf-bn512-splitacc",
               series=SERIES_GSM, figsize=(14.2, 5.4))
+    bar_chart(read_rows("## BN=512 两轮轮转（第四种设计）", ncols=7),
+              "BN=512 two-round slots · GSM sweep, both BK settings",
+              OUTDIR / "perf-bn512-2round",
+              series=SERIES_2ROUND, figsize=(14.2, 5.4))
 
 
 if __name__ == "__main__":
