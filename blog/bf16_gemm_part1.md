@@ -69,15 +69,13 @@ GROUP_SIZE_M（后文简称 GSM）就是这里唯一的旋钮。它也不是越�
 
 在介绍流水线编排模型之前，我们先放出代码的宏观框架，以便为读者建立一个宏观的认知：我们在编什么程。以 CUDA 编程语言为例，众所周知，在 CUDA 编程中，我们需要指明每个线程的行为，同时一个 CTA 中的线程又能通过 SMEM 协作、交换数据等等。于 GEMM kernel 的表达而言，更加自然的方式是以 CTA 为视角来描述；具体在 CUDA 的层面，则需要再映射为每一个线程的操作。我们的程序框架如下：
 
-GEMM 程序不是最终会计算出一个 MxN 的矩阵的输出结果嘛，在逻辑上我们先把这个输出矩阵按照 BMxBN 的块大小划分，即，划分成 M/BM 行和 N/BN 列，每一块的大小是 BMxBN。这样的一个块，我们也将它称为 output tile，计算它对应的输入数据则被称为 input tile 或者 A tile 和 B tile。
+首先在逻辑上我们先把 MxN 大小的输出矩阵按照 BMxBN 的块大小划分，即，划分成 M/BM 行和 N/BN 列，每一块的大小是 BMxBN。这样的一个块，我们也将它称为 output tile，计算它对应的输入数据则被称为 input tile 或者 A tile 和 B tile。一种简单的矩阵乘法实现方式是让一个 CTA 计算一个 output tile，这样需要 launch 的 CTA 的总数就是 ceil(M/BM) * ceil(N/BN)，即每一个 CTA 完成一个 output tile 的 accumulation 之后，将它写入内存，然后程序就结束了，然后再会调度到其他的 CTA 执行。这样的问题在于，将 accumulation 结果写回内存的过程，没有和新一轮的计算重叠起来。所以实际上在高性能的矩阵乘法实现中，都会让一个 CTA 计算多个 output tile，这样在前一个 output tile 完成了 accumulation，在写入内存的同时，下一个 output tile 的计算便可以同时运行。举个例子，譬如 GPU 上有多少个 SM，我们就可以 launch 多少个 CTA，然后每个 CTA 计算的 output tile 的数量是 ceil(ceil(M/BM) * ceil(N/BN) / num_CTA)。这样的分配方式又被称为 persistent kernel，即这些 CTA 常驻在 SM 上，是 persistent 的，连着算许多个 output tile。
 
-每个 CTA 会计算不止一个 output tile，事实上，它们会使用一个外层循环，在循环里依次计算分配给它们的每个 output，具体 output tiles 是如何分配给 CTA 的，就存在一个分配问题，也就和 CTA swizzle 相关，下图给出了一种可能的分配方式的图示。
+注意，在这样 persistent kernel 的 CTA 分配方式下，每个 CTA 到底被分配到哪些 output tiles 依然存在一个分配问题，即上面所说的 CTA swizzle 和一个 CTA 算多个 output tile 是一个正交的关系。如果假设一共有 8 个 SM，然后我们使用 8 个常驻 CTA，总共合起来计算 64 个 output tiles，然后将 CTA swizzling factor （GSM）设为 4。那结合了 persistent kernel 以及 CTA swizzle 二者之后每个 CTA 分配到的 output tileds 则如下图所示。
 
 ![8 个 CTA 与 output tile 的一种分配方式](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/cta-assignment.png)
 
-上图中一共 8 个 CTA，分配的顺序是先沿着一列往下走完 4 个 tile，再走下一列，走满 8 个之后又从 CTA0 重新开始 —— 所以这个分配模式每两列重复一次。不同的分配顺序会决定相邻的 CTA 之间共享哪些 A tile 和 B tile，也就直接影响 L2 的复用效率，这正是后文 CTA swizzle 要调的东西。
-
-既然存在一个外层循环用来计算不同的 output tiles，那自然也有个内层循环了。事实上，计算一个 output tile 也不是一步到位的，而是会每次加载一部分的 A tile 和 B tile，即每次加载 BMxBK 的 A 数据，和 BKxBN 的 B 数据 —— 即，一个 BK tile，然后分成 K/BK 步完成计算，这便是内层循环的迭代，我们也称它为 k tile 迭代。
+这个 persistent kernel 的部分，我们在以下伪代码中称为外层循环，即每一次迭代计算一个不同的 output tile。与此同时，还会有一个内层循环，因为每计算一个 output tile 便需要分成 K/BK 步完成计算，即每次加载 BMxBK 的 A 数据，和 BKxBN 的 B 数据，我们也把这个内层循环称为 k tile 迭代。
 
 这两层循环用伪代码描述如下：
 
