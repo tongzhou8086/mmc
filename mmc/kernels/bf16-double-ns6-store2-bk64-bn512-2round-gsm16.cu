@@ -458,7 +458,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
 
         if (warp_id == 0 && elect_sync()) {
             uint32_t compute_buffer_free_phase[NS] = {};
-            long gk = 0;
             for (int ti = 0; ti < num_my; ti++) {
                 int base_m, base_n, local_m, local_n;
                 map_off(ti, base_m, base_n, local_m, local_n);
@@ -495,7 +494,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
                                 compute_data_ready_cta0,
                                 round == 0 ? SLOT_BYTES : B_SLOT_BYTES);
                             compute_buffer_free_phase[slot] ^= 1;
-                            gk++;
                         }
                     }
                 }
@@ -503,7 +501,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
         } else if (cta_rank == 0 && warp_id == 1 && elect_sync()) {
             uint32_t compute_data_ready_phase[NS] = {};
             uint32_t tmem_panel_free_phase[2] = {};
-            long gk = 0;
             for (int ti = 0; ti < num_my; ti++) {
                 uint32_t d_tmem = taddr;
                 // The same two rounds the TMA warp uses: panel 0 consumes this
@@ -546,7 +543,6 @@ __device__ __forceinline__ void matmul_cluster_impl(
                                         &mbar_tmem_data_ready[panel]), cta_mask);
                             signal_on_mma_completion(bf, cta_mask);
                             compute_data_ready_phase[slot] ^= 1;
-                            gk++;
                         }
                     }
                 }
