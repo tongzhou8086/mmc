@@ -45,7 +45,7 @@ Blackwell 的 tcgen05 MMA 指令支持一种叫做 `cta_group::2` 的模式：�
 
 左边是不开启的情形：两个 CTA 各自独立地计算一块 BMxBN 的输出，各自都需要完整的 B tile —— 于是同一份 B 数据被从内存里读了两遍。右边是开启之后：两个 CTA 合起来计算一块 2BMxBN 的输出，A 天然地被切成两半（每个 CTA 各持有自己的那 BM 行），而 B 也被切成两半（每个 CTA 只持有 BN/2 列），MMA 单元则跨 cluster 去读取另一个 CTA 的那一半。同样大小的输出，B 只被读了一遍。
 
-![2-CTA MMA 开启前后：B tile 从读两遍变成只读一遍](https://github.com/user-attachments/assets/e80a51c8-aac1-45b0-991c-74ec8d791fce)
+![2-CTA MMA 开启前后：B tile 从读两遍变成只读一遍](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-cta-mma.png)
 
 这一条优化带来两个后果，后文都会反复用到：
 
