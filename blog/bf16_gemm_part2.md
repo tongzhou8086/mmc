@@ -34,7 +34,7 @@ GEMM kernel 的运行都会涉及到下述五种对容器的操作，每一种�
 
 第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果必须保存在 TMEM 中，当一个 output tile 所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 [tcgen05.ld](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tcgen05%2520ld#tcgen05-matrix-fragments-shape-3232b)，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld 读取到寄存器中的数据是[按列分布](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tcgen05%2520ld#tcgen05-matrix-fragments-shape-3232b)到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的 layout 方式使得，如果直接将寄存器结果写入内存就会导致一个 warp 中不同线程按列写入，产生 [uncoalesced memory access](https://developer.nvidia.com/blog/unlock-gpu-performance-global-memory-access-in-cuda/)。于是在我们所有的设计中，都会将 tcgen05.ld 的结果先写入一个 SMEM 缓冲区，在缓冲区进行重组，每行能够凑满 128 个连续字节了再进行 coalesced memory write，这也便是最后的两步。
 
-### Buffer 状态翻转与操作之间的同步法则
+### Buffer 的状态翻转与操作之间的同步法则
 上述的四种容器中的每一种都会被一种操作读，也会被另一种操作写，为了保证操作的正确性，任何一个容器都无法同时被读以及被写，即同一个容器要么处于在读的状态，要么处于在写的状态，否则就会导致读入错误的数据。于是我们给所有的容器都分配两种互斥的状态：可读和可写。一个操作的完成，即产生一个事件，可以翻转容器的状态。假设一个容器的初始状态为“可写”，然后写操作开始，容器里被灌入新的数据，当写操作结束时，容器的状态即翻转为“可读”，代表数据已经就绪。类似的，假如一个容器的状态为“可读”，然后读操作开始，容器里的数据逐渐被消费。当读操作结束时，容器的状态即翻转为“可写”，代表数据已被消费完，内容可以被覆盖了。
 
 于是可以自然地推导出，任何一个操作要能够开始必须同时满足的两个条件是：
@@ -82,24 +82,22 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 
 这下 MMA 那一行从头到尾连成了一片，再没有空档 —— 而 MMA 能持续 issue，正是整个流水线编排追求的目标。后文第一种设计里的双 MMA buffer，做的就是这件事。
 
-### Warp Specialization
-具体到软件编写的层面，上述的 5 种操作会被映射给不同的 warps，各个操作配置多少 Warps 也是流水线设计的一部分。对于本文所探讨的设计方案而言，均采用如下配置：
+### 流水线调度的 Warp 配置
+具体到软件编写的层面，上述的 5 种操作会被映射给不同的 warps，使得它们能够并行运行。各个操作配置多少 Warps 也是流水线设计的一部分。对于本文所探讨的设计方案而言，均采用如下配置：
 
-* 配一个 Warp 进行 TMA load，又称 TMA Warp
-* 配一个 Warp 进行 MMA，又称 MMA Warp
-* 配 4 个或者 8 个 warps 进行 tcgen05.ld 和 stage，这些 warps 也被称为 epilogue warps
+* 配一个 Warp 进行 TMA load issue，又称 TMA Warp
+* 配一个 Warp 进行 MMA issue，又称 MMA Warp
+* 配 4 个或者 8 个 warps 进行 tcgen05.ld 和 stage（属于 SIMT 操作），这些 warps 也被称为 epilogue warps
 * TMA Store 操作也顺便由上面的 Epilogue Warps 完成
 
-这样的配置既有原理层面的约束，也是实际经验的结果。先说原理层面，之所以给 TMA load 和 MMA 操作都只配一个 Warp，是因为发射 TMA load 或者 Store 指令以及 MMA 指令，都只需要一个 Warp 的一个线程发出指令就行，所以分别配一个 warp 就行了 —— 发射 TMA load 或者 MMA 指令之前，也还会有一些整数计算，算一下 address offset 之类的，但是这些也都是 scalar 计算，所以理论上其实对于 TMA load 和 MMA 操作，配一个线程其实就够了，只是因为 GPU 的调度单元最小是一个 Warp，所以我们给它配了一个 Warp。
-
-但是后面的 tcgen05.ld 和 stage 操作就不太一样了，这两操作要对数据进行批量操作，需要使用 SIMT 模型进行编程，于是我们要配多个 warps 来提高并行度 —— 4 个 warps 是 GPU 编程的一个标配，有时候我们也会配 8 个 warps 来提高能使用的寄存器数量。另外最后的 TMA Store 操作本质上也只需要配一个线程，我们可以给它单独配一个 Warp。但是经验上我们发现，就让 Epilogue Warps 顺便完成 TMA Store，也挺高效的。因为 TMA Store 是一个比较简单的操作，只需要发射一条 TMA store 指令，加上一点简单的地址计算。
+tcgen05.ld 和 stage 操作经验上我们会让它们串行运行，减少 warp 调度的粒度，一方面也是因为 tcgen05.ld buffer 往往只会配置一个，也没法并行起来。此外由于 TMA store 是一个简单的指令发射，我们也顺便让 epilogue warps 完成，也没有再单独配置一个 warp。其他的 TMA load 和 MMA 的 issue 为了高度重叠都各自配有自己的 warp。
  
 
 ### 流水线调度的参数配置与原语
-流水线调度表达的是一个程序，它表达的是数据在前文所说的这些 buffer 之间流动的时候的时序设计以及同步关系。它涉及到一些基础的参数配置，这些参数就是流水线调度程序的常量。任何的一种调度方式，至少需要配置如下参数：
+warp 配置好了以后我们再来总结下流水线的参数配置，以及一些计算方法，任何的一种调度方式，至少需要配置如下参数：
 
 * Tile sizes: BM/BN/BK 设为多少
-* 上述的 4 种 Buffer 每种分别配几个，大小几何
+* 上述的 4 种 Buffer 每种分别配几个，每个多大
 
 如前文所述，我们会对同一个类型的 Buffer 配置多个，来提高流水线的重叠程度，从而减少上面这两类停顿。在硬件资源（SMEM、TMEM、RMEM 的容量）给定的情况下，每种类型的 Buffer 具体配多大、配几个就存在一个设计问题。Tile Sizes 的配置中，BM 的配置固定为 128，和 TMEM 的 layout 一致（128 行），没有别的选择。对于 M 无法被 128 整除的情况，则需要对做 out of bound 处理。而单次 MMA 操作可以支持的 N 的尺寸可以是 64 或 128 或 256。再者，由于 TMEM 的大小为 128 行乘 512 列，这实质上也限制了我们对 BN 的配置，最大为 512。所以后文会讨论两种不同的配置，BN 分别配为 256 和 512，它们达成的流水线状态会相当不一样。BK 也是需要配置的一个 Tile size 参数，由于它是 A Tile 的 inner dimension，于是便涉及内存的连续访问问题。对 GPU 内存进行读写，你最好能以 128 个连续字节为单位进行操作，这样就不会浪费内存带宽。于是这里我们会把 BK 配成 64 的整数倍 —— 对于 BF16 数据类型，64 个元素就是 128 字节。
 
@@ -114,9 +112,6 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 B tile 之所以后面会除以 2，是因为我们默认了 2 CTA MMA 的开启。
 
 
-除了参数配置，流水线设计定义了一套基本操作。不同的调度方案虽然在 tile sizes、buffer 数量、
-数据的加载、MMA 的 issue、epilogue 的时机上各不相同，但都可以用同一套原语来表达，即一套流水线调度的基本对象，及其对应的
-操作与信号；完整定义详见 [docs/pipeline-primitives.md](../docs/pipeline-primitives.md)。
-后文的伪代码都基于这套原语书写。
+除了参数配置，流水线调度方案定义了一套基本操作。不同的调度方案虽然在 tile sizes、buffer 数量、数据的加载、MMA 的 issue、epilogue 的时机上各不相同，但都可以用同一套原语 + 基本的控制流来表达。原语的完整定义详见 [docs/pipeline-primitives.md](../docs/pipeline-primitives.md)。后文的伪代码都基于这套原语书写。
 
 流水线的理论部分介绍完毕，在下一部分中，我们会开始看具体的调度设计。
