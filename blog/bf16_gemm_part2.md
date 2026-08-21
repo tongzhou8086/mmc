@@ -54,7 +54,7 @@
 * MMA 不能与 TMA load 或者 tcgen05.ld 同时运行，但是可以和 stage 以及 TMA store 同时运行
 * 以此类推等等
 
-为了简化图形的显示，我们假设每个 output tile 只需要两轮内层循环，即 K = 2*BK，即可得到如下的流水线时序图。
+为了简化图形的显示，我们假设每个 output tile 只需要两轮内层循环，即 K = 2*BK，也只画两个 output tile，即可得到如下的流水线时序图。
 
 ![单 buffer 配置下的流水线时序（K = 2·BK）](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/single-buffer-timeline.png)
 
