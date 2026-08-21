@@ -90,7 +90,7 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 * 配 4 个或者 8 个 warps 进行 tcgen05.ld 和 stage（属于 SIMT 操作），这些 warps 也被称为 epilogue warps
 * TMA Store 操作也顺便由上面的 Epilogue Warps 完成
 
-tcgen05.ld 和 stage 操作经验上我们会让它们串行运行，减少 warp 调度的粒度，一方面也是因为 tcgen05.ld buffer 往往只会配置一个，也没法并行起来。此外由于 TMA store 是一个简单的指令发射，我们也顺便让 epilogue warps 完成，也没有再单独配置一个 warp。其他的 TMA load 和 MMA 的 issue 为了高度重叠都各自配有自己的 warp。
+tcgen05.ld 和 stage 操作经验上我们会让它们串行运行，减少 warp 调度的粒度，一方面也是因为 tcgen05.ld buffer 往往只会配置一个，也没法并行起来。此外由于 TMA store 是一个简单的指令发射，我们也顺便让 epilogue warps 完成，也没有再单独配置一个 warp。其他的 TMA load 和 MMA 的 issue 为了高度重叠都各自配有自己的 warp。让不同的 warp 做不同的事情又被称为 [warp specilization](https://rohany.github.io/blog/warp-specialization/)。
  
 
 ### 流水线调度的参数配置与原语
