@@ -35,7 +35,7 @@ $$ A.I. = \frac{(2\times BM \times BN \times BK)}{2\times BM \times BK + 2\times
 
 Blackwell 的 MMA 单元则是新一代的 Tensor Core Engine，和 TMA 单元类似，他们都处于一个 SM 内部，都是可以独立异步运作的硬件单元。从软件的角度，也只需要一个 warp 的一个线程发送 [MMA 指令](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/guides/mma/tcgen05_programming.html)，MMA 单元便可以在背后异步地进行 MMA 运算。其实，也正是因为 TMA 和 MMA 单元都是异步的，才会使得流水线的设计大放异彩 —— 软件的功能更趋近于一个“调度者”的角色，而很多的操作都是专门的硬件在背后异步地完成。
 
-TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储介质，以一种类似于矩阵的方式组织，有 128 行、512 列，每一个 cell 可以存放一个 float 类型，4 个字节，总容量为 256K。根据 Blackwell 的设计，MMA 的结果只能存放在 TMEM 中，而操作数可以放在 SMEM 或 TMEM 中。不过，在我们后续的讨论中，我们都会默认操作数就放在 SMEM 中，即 MMA 单元从 SMEM 中读取数据，在 TMEM 中存放累加的结果。
+[TMEM](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=Tensor%2520memory#tensor-memory) 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储介质，以一种类似于矩阵的方式组织，有 128 行、512 列，每一个 cell 可以存放一个 float 类型，4 个字节，总容量为 256K。根据 Blackwell 的设计，MMA 的结果只能存放在 TMEM 中，而操作数可以放在 SMEM 或 TMEM 中。不过，在我们后续的讨论中，我们都会默认操作数就放在 SMEM 中，即 MMA 单元从 SMEM 中读取数据，在 TMEM 中存放累加的结果。
 
 上述的硬件单元的设计限制，就成了我们流水线设计的硬性限制，影响了各种 trade off。这里我们仅仅论述 Blackwell 新引入的硬件特性，而像传统的 GPU 架构内容，我们假设读者已经熟悉，不再赘述。
 
