@@ -119,9 +119,118 @@ def tiled_gemm(path):
     plt.close(fig)
 
 
+# 2-CTA MMA. Ownership is the whole point of the figure, so colour means "which
+# CTA holds this operand" - the same blue / amber pair the persistent-grid
+# figure uses for CTA identity - while the accumulator keeps the MMA-buffer
+# green it has in the timelines.
+CTA0_FILL = "#a9c4de"     # CTA 0's operands, in SMEM
+CTA1_FILL = "#e9c79a"     # CTA 1's operands, in SMEM
+ACC_FILL = "#a9d3b0"      # the C tile, in TMEM
+
+TC_BM, TC_BN, TC_K, TC_GAP = 1.0, 3.0, 0.55, 0.18
+
+
+def _tc_block(ax, x, y, w, h, fill, label, fontsize=13):
+    ax.add_patch(Rectangle((x, y), w, h, facecolor=fill, edgecolor=EDGE,
+                           linewidth=1.2, zorder=3))
+    ax.text(x + w / 2, y + h / 2, label, ha="center", va="center",
+            fontsize=fontsize, style="italic", color=INK, zorder=4)
+
+
+def two_cta_mma(path):
+    """2-CTA MMA off vs on: the same output, half the B traffic.
+
+    Left: two independent CTAs, each with its own full B tile - B crosses the
+    memory bus twice. Right: one cluster computing a 2BM x BN output, with B
+    split BN/2 per CTA and the MMA reading across the cluster, so B crosses
+    once.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(13.2, 6.6))
+    BM, BN, KW, G = TC_BM, TC_BN, TC_K, TC_GAP
+
+    def cta_label(ax, y, text):
+        ax.text(-KW - G - 0.30, y + BM / 2, text, ha="right", va="center",
+                fontsize=11, fontweight="bold", color=INK)
+
+    def frame(ax, title, caption):
+        ax.set_title(title, fontsize=12.5, fontweight="bold", color=INK,
+                     loc="left", pad=12)
+        ax.text((BN - KW - G) / 2, -2.55, caption, ha="center", va="top",
+                fontsize=11, color=INK)
+        ax.set_xlim(-1.95, BN + 0.75)
+        ax.set_ylim(-3.05, 2.75)
+        ax.set_aspect("equal")
+        ax.axis("off")
+
+    # ---- left: 2-CTA off ------------------------------------------------
+    ax = axes[0]
+    for y0, fill, name in ((0.55, CTA0_FILL, "CTA 0"),
+                           (-1.85, CTA1_FILL, "CTA 1")):
+        _tc_block(ax, 0, y0, BN, BM, ACC_FILL, "C")
+        _tc_block(ax, -KW - G, y0, KW, BM, fill, "A", fontsize=11)
+        _tc_block(ax, 0, y0 + BM + G, BN, KW, fill, "B")
+        cta_label(ax, y0, name)
+    _dim(ax, 0, -2.25, BN, -2.25, "BN", offset=(0, 0.22), fontsize=11)
+    frame(ax, "2-CTA MMA off:  two independent CTAs",
+          "each CTA loads the whole B tile — B crosses the bus 2×")
+
+    # ---- right: 2-CTA on -------------------------------------------------
+    ax = axes[1]
+    _tc_block(ax, 0, 0, BN, BM, ACC_FILL, "C")
+    _tc_block(ax, 0, -BM, BN, BM, ACC_FILL, "C")
+    _tc_block(ax, -KW - G, 0, KW, BM, CTA0_FILL, "A", fontsize=11)
+    _tc_block(ax, -KW - G, -BM, KW, BM, CTA1_FILL, "A", fontsize=11)
+    for x0, fill in ((0, CTA0_FILL), (BN / 2, CTA1_FILL)):
+        _tc_block(ax, x0, BM + G, BN / 2, KW, fill, "")
+        ax.text(x0 + BN / 4, BM + G + KW / 2 + 0.09, "B", ha="center",
+                va="center", fontsize=13, style="italic", color=INK, zorder=4)
+        ax.text(x0 + BN / 4, BM + G + KW / 2 - 0.16, "BN/2", ha="center",
+                va="center", fontsize=9, style="italic", color=MUTED,
+                zorder=4)
+    cta_label(ax, 0, "CTA 0")
+    cta_label(ax, -BM, "CTA 1")
+
+    # the MMA of the cluster reads both halves of B, so each CTA reaches
+    # across to the other one's half - the arc says exactly that
+    y_arc = BM + G + KW
+    ax.add_patch(FancyArrowPatch((BN / 4, y_arc), (3 * BN / 4, y_arc),
+                                 connectionstyle="arc3,rad=-0.45",
+                                 arrowstyle="<|-|>", mutation_scale=11,
+                                 linewidth=1.4, linestyle=(0, (4, 3)),
+                                 color=MUTED, shrinkA=3, shrinkB=3, zorder=5))
+    ax.text(BN / 2, y_arc + 0.72, "MMA reads both halves across the cluster",
+            ha="center", va="bottom", fontsize=10, color=MUTED)
+
+    _dim(ax, BN + 0.30, -BM, BN + 0.30, BM, "2BM", offset=(0.42, 0),
+         fontsize=11)
+    frame(ax, "2-CTA MMA on:  one cluster, one 2BM × BN output",
+          "B is split BN/2 per CTA — B crosses the bus 1×")
+
+    handles = [Rectangle((0, 0), 1, 1, facecolor=CTA0_FILL, edgecolor=EDGE,
+                         linewidth=1.0),
+               Rectangle((0, 0), 1, 1, facecolor=CTA1_FILL, edgecolor=EDGE,
+                         linewidth=1.0),
+               Rectangle((0, 0), 1, 1, facecolor=ACC_FILL, edgecolor=EDGE,
+                         linewidth=1.0)]
+    fig.legend(handles,
+               ["CTA 0 operands (SMEM)", "CTA 1 operands (SMEM)",
+                "output C (TMEM)"],
+               loc="lower center", ncol=3, frameon=False, fontsize=10.5,
+               labelcolor=MUTED, handlelength=1.1, handleheight=1.0,
+               columnspacing=2.4, bbox_to_anchor=(0.5, 0.015))
+
+    fig.tight_layout(pad=0.4, rect=(0, 0.05, 1, 1))
+    for suffix in ("png", "svg"):
+        out = path.with_suffix("." + suffix)
+        fig.savefig(out, dpi=220, bbox_inches="tight", facecolor="white")
+        print(f"wrote {out}")
+    plt.close(fig)
+
+
 def main():
     OUTDIR.mkdir(parents=True, exist_ok=True)
     tiled_gemm(OUTDIR / "tiled-gemm")
+    two_cta_mma(OUTDIR / "two-cta-mma")
     cta_assignment(OUTDIR / "cta-assignment")
     cta_swizzle(OUTDIR / "cta-swizzle")
     persistent_swizzle(OUTDIR / "persistent-swizzle")
