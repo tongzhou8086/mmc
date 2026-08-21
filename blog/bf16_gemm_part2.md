@@ -70,7 +70,7 @@ GEMM kernel 的运行都会涉及到下述五种对容器的操作，每一种�
 ### 解决 RAW 停顿
 
 RAW 停顿来源于 read-after-write 数据依赖，减少停顿的方法则是预取（prefetch）数据，即 read 的时候同时开始下一轮的 write，这样可以减少下次 read 的时候的等待。这样的数据预取需要我们使用多个 TMA buffer，即当一个 MMA 开始时，与此同时，TMA load 可以同时开始往另一个 buffer 里面写入。
-下图演示使用两个 TMA buffer 的情况，实际具体用几个 TMA buffer 好取决于 MMA 和 TMA load 的时长比例。
+下图演示使用两个 TMA buffer 的情况，实际具体用几个 TMA buffer 是最优的取决于 MMA 和 TMA load 的时长比例。
 
 ![两份 TMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-tma-buffer-timeline.png)
 
