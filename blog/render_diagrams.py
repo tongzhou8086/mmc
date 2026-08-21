@@ -362,6 +362,10 @@ BARS_2BUF = [(0, 0, 1, "k=0", 0), (0, 1, 2, "k=1", 1),
              (2, 6, 7, "", 0), (3, 7, 8, "", 0), (4, 8, 9, "", 0)]
 BRACKETS_2BUF = [(0, 6, "output tile 0"), (2, 9, "output tile 1")]
 
+# Prefetching killed the RAW gaps inside a tile; the one between the tiles is
+# a WAR - tile 1's first MMA still waits for tile 0's accumulator to drain.
+STALLS_2BUF = [(1, 3, 4, "WAR")]
+
 # Two TMA buffers and two accumulators: the loads alternate as before, and now
 # the MMAs do too - tile 0 accumulates into copy 0, tile 1 into copy 1, so
 # tile 1 no longer waits for tile 0's drain.
@@ -373,9 +377,13 @@ BARS_2ACC = [(0, 0, 1, "k=0", 0), (0, 1, 2, "k=1", 1),
              (2, 5, 6, "", 0), (3, 6, 7, "", 0), (4, 7, 8, "", 0)]
 BRACKETS_2ACC = [(0, 6, "output tile 0"), (2, 8, "output tile 1")]
 
+# Nothing left to hatch: with two accumulators the MMA row runs end to end,
+# so this figure gets a note where the other two get stall boxes.
+NOTES_2ACC = [(1, 5.2, "no RAW or WAR gap left - MMA issues back to back")]
+
 
 def _op_timeline(path, bars, brackets, title, subtitle, xmax, legend,
-                 stalls=()):
+                 stalls=(), row_notes=()):
     H, DY = 0.66, 1.0
     NR = len(SB_ROWS)
     row_y = lambda r: (NR - 1 - r) * DY
@@ -420,6 +428,12 @@ def _op_timeline(path, bars, brackets, title, subtitle, xmax, legend,
         ax.text((t0 + t1) / 2, y + H / 2, kind, ha="center", va="center",
                 fontsize=9, fontweight="bold", color=ink, zorder=4,
                 bbox=dict(facecolor=fill, edgecolor="none", pad=1.6))
+
+    # a remark set inside a row, in the empty stretch after its last bar -
+    # for the figure whose point is that the row has no gap left to hatch
+    for r, t0, text in row_notes:
+        ax.text(t0, row_y(r) + H / 2, text, ha="left", va="center",
+                fontsize=9.5, style="italic", color=MUTED, zorder=4)
 
     for k, (t0, t1, text) in enumerate(brackets):
         tile_bracket(t0, t1, NR * DY + 0.16 + 0.58 * k, text)
@@ -480,7 +494,11 @@ def two_tma_buffer_timeline(path):
                  "the loads alternate between the two copies, so the k=1 load "
                  "runs while MMA k=0 still reads the k=0 copy",
                  9, [(TMA_COLOUR[0], "TMA buffer 0"),
-                     (TMA_COLOUR[1], "TMA buffer 1")])
+                     (TMA_COLOUR[1], "TMA buffer 1"),
+                     (STALL_STYLE["WAR"][0], "WAR stall - MMA waits for "
+                      "tcgen05.ld to drain the accumulator",
+                      STALL_STYLE["WAR"][1])],
+                 stalls=STALLS_2BUF)
 
 
 def two_accumulator_timeline(path):
@@ -491,7 +509,8 @@ def two_accumulator_timeline(path):
                  8, [(TMA_COLOUR[0], "TMA buffer 0"),
                      (TMA_COLOUR[1], "TMA buffer 1"),
                      (ACC_COLOUR[0], "MMA buffer 0"),
-                     (ACC_COLOUR[1], "MMA buffer 1")])
+                     (ACC_COLOUR[1], "MMA buffer 1")],
+                 row_notes=NOTES_2ACC)
 
 
 
