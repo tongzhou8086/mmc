@@ -223,8 +223,9 @@ BARS_1BUF = [(0, 0, 1, "k=0", 0), (1, 1, 2, "k=0", 0),
              (0, 2, 3, "k=1", 0), (1, 3, 4, "k=1", 0),
              (2, 4, 5, "", 0), (3, 5, 6, "", 0), (4, 6, 7, "", 0),
              (0, 4, 5, "k=0", 0), (1, 5, 6, "k=0", 0),
-             (0, 6, 7, "k=1", 0), (1, 7, 8, "k=1", 0)]
-BRACKETS_1BUF = [(0, 7, "output tile 0"), (4, 8, "output tile 1")]
+             (0, 6, 7, "k=1", 0), (1, 7, 8, "k=1", 0),
+             (2, 8, 9, "", 0), (3, 9, 10, "", 0), (4, 10, 11, "", 0)]
+BRACKETS_1BUF = [(0, 7, "output tile 0"), (4, 11, "output tile 1")]
 
 # Two TMA buffers: the loads alternate between the two copies, which is why the
 # k=1 load can run while MMA k=0 still reads the k=0 copy. Only one accumulator,
@@ -324,7 +325,7 @@ def single_buffer_timeline(path):
     _op_timeline(path, BARS_1BUF, BRACKETS_1BUF, "One buffer of each kind",
                  "every consecutive pair shares a buffer, so within one tile "
                  "nothing overlaps at all",
-                 8, [])
+                 11, [])
 
 
 def two_tma_buffer_timeline(path):
