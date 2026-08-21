@@ -15,17 +15,12 @@
 
 ![四种 buffer 的物理载体](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/sm-storage-map.png)
 
-事实上内存也是一种 buffer，但由于从流水线调度的视角，内存操作并不涉及任何的资源调度策略，所以这里略去不表。
+事实上内存也是一种 buffer，数据会最初来自于内存，最后又流入内存。但由于从流水线资源调度的视角，内存并不参与，所以这里略去不表。
 
-### Buffer 的两种状态：可读或可写
-上述的任何一种 buffer 都具有读写互斥性，即同一个 buffer 不能同时被读写，如果生产者的写入和消费者的读取同时进行，则会导致读取错误的数据。于是一个 buffer 总会有两种状态，要么处于“可读”状态，即数据已经就绪，要么处于“可写”状态，即数据已被消费完、可被覆盖。
+### 针对 Buffer 的五种操作
+本文探讨的所有 GEMM kernel 设计，都会涉及到下述五种对容器的操作，每一种操作会从一个源 Buffer 读取数据，并将操作后的结果写入目的 Buffer —— 从数据流的角度，可以视为数据从源 Buffer 流入了目的 Buffer。
 
-这种互斥性建立了我们后续要探讨的同步机制的根基。
-
-### 针对 Buffer 的 5 种操作
-任何的流水线设计，都会涉及到下述 5 种操作，每一种操作会从一个源 Buffer 读取数据，并将操作后的结果写入目的 Buffer —— 从数据流的角度，可以视为数据从源 Buffer 流入了目的 Buffer。
-
-这 5 种操作分别是：
+这五种操作分别是：
 
 * TMA load: 从内存读取数据，写入 TMA buffer
 * MMA: 从 TMA buffer 读取数据，结果写入 MMA buffer
@@ -33,7 +28,7 @@
 * stage: 从 tcgen05.ld 读取数据，写入 stage buffer
 * TMA store: 从 stage buffer 读取数据，写入内存
 
-把这 5 种操作串起来看，就是下面这张图 —— 每个箭头是一种操作，箭头两端则是它读取的源 buffer 和写入的目的 buffer：
+把这五种操作串起来看，就是下面这张图 —— 每个箭头是一种操作，箭头两端则是它读取的源 buffer 和写入的目的 buffer：
 
 ![5 种操作及其源和目的 buffer](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/operations-chain.png)
 
