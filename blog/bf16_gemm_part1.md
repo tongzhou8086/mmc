@@ -71,7 +71,7 @@ GROUP_SIZE_M（后文简称 GSM）就是这里唯一的旋钮。它也不是越�
 
 首先在逻辑上我们先把 MxN 大小的输出矩阵按照 BMxBN 的块大小划分，即，划分成 ceil(M/BM) 行和 ceil(N/BN) 列，每一块的大小是 BMxBN（当 M、N 除不尽时，边缘的那一行/一列块会算不满，需要额外的边界处理，这里不展开）。这样的一个块，我们也将它称为 output tile，计算它对应的输入数据则被称为 input tile 或者 A tile 和 B tile。为方便后文引用，记 output tile 的总数为
 
-$$ \text{num\_tiles} = \lceil M/BM \rceil \times \lceil N/BN \rceil $$
+`num_tiles = ceil(M/BM) * ceil(N/BN)`
 
 一种简单的矩阵乘法实现方式是让一个 CTA 计算一个 output tile，这样需要 launch 的 CTA 的总数就正好是 num_tiles，即每一个 CTA 完成一个 output tile 的 accumulation 之后，将它写入内存，这个 CTA 便退出了，空出来的 SM 再由硬件调度下一个尚未开始的 CTA 上来执行。这样的问题在于，将 accumulation 结果写回内存的过程，没有和新一轮的计算重叠起来。所以实际上在高性能的矩阵乘法实现中，都会让一个 CTA 计算多个 output tile，这样在前一个 output tile 完成了 accumulation，在写入内存的同时，下一个 output tile 的计算便可以同时运行。举个例子，譬如 GPU 上有多少个 SM，我们就可以 launch 多少个 CTA（记作 num_CTA），再把 num_tiles 个 output tile 依次分给它们。这样的分配方式又被称为 persistent kernel，即这些 CTA 常驻在 SM 上，是 persistent 的，连着算许多个 output tile。
 
