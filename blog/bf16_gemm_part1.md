@@ -69,9 +69,7 @@ GROUP_SIZE_M（后文简称 GSM）就是这里唯一的旋钮。它也不是越�
 
 在介绍流水线编排模型之前，我们先放出代码的宏观框架，以便为读者建立一个宏观的认知：我们在编什么程。以 CUDA 编程语言为例，众所周知，在 CUDA 编程中，我们需要指明每个线程的行为，同时一个 CTA 中的线程又能通过 SMEM 协作、交换数据等等。于 GEMM kernel 的表达而言，更加自然的方式是以 CTA 为视角来描述；具体在 CUDA 的层面，则需要再映射为每一个线程的操作。我们的程序框架如下：
 
-首先在逻辑上我们先把 MxN 大小的输出矩阵按照 BMxBN 的块大小划分，即，划分成 ceil(M/BM) 行和 ceil(N/BN) 列，每一块的大小是 BMxBN（当 M、N 除不尽时，边缘的那一行/一列块会算不满，需要额外的边界处理，这里不展开）。这样的一个块，我们也将它称为 output tile，计算它对应的输入数据则被称为 input tile 或者 A tile 和 B tile。为方便后文引用，记 output tile 的总数为
-
-`num_tiles = ceil(M/BM) * ceil(N/BN)`
+首先在逻辑上我们先把 MxN 大小的输出矩阵按照 BMxBN 的块大小划分，即，划分成 ceil(M/BM) 行和 ceil(N/BN) 列，每一块的大小是 BMxBN（当 M、N 除不尽时，边缘的那一行/一列块会算不满，需要额外的边界处理，这里不展开）。这样的一个块，我们也将它称为 output tile，计算它对应的输入数据则被称为 input tile 或者 A tile 和 B tile。为方便后文引用，记 output tile 的总数为 `num_tiles = ceil(M/BM) * ceil(N/BN)`。
 
 一种简单的矩阵乘法实现方式是让一个 CTA 计算一个 output tile，这样需要 launch 的 CTA 的总数就正好是 num_tiles，即每一个 CTA 完成一个 output tile 的 accumulation 之后，将它写入内存，这个 CTA 便退出了，空出来的 SM 再由硬件调度下一个尚未开始的 CTA 上来执行。这样的问题在于，将 accumulation 结果写回内存的过程，没有和新一轮的计算重叠起来。所以实际上在高性能的矩阵乘法实现中，都会让一个 CTA 计算多个 output tile，这样在前一个 output tile 完成了 accumulation，在写入内存的同时，下一个 output tile 的计算便可以同时运行。举个例子，譬如 GPU 上有多少个 SM，我们就可以 launch 多少个 CTA（记作 num_CTA），再把 num_tiles 个 output tile 依次分给它们。这样的分配方式又被称为 persistent kernel，即这些 CTA 常驻在 SM 上，是 persistent 的，连着算许多个 output tile。
 
@@ -80,8 +78,6 @@ GROUP_SIZE_M（后文简称 GSM）就是这里唯一的旋钮。它也不是越�
 注意，在这样 persistent kernel 的 CTA 分配方式下，每个 CTA 到底被分配到哪些 output tiles 依然存在一个分配问题，即上面所说的 CTA swizzle 和一个 CTA 算多个 output tile 是一个正交的关系：CTA swizzle 决定的是 output tile 的**遍历顺序**，persistent kernel 决定的是把这个顺序上的第 i 个 tile 交给**哪一个 CTA**（最直接的做法就是交给第 i mod num_CTA 个 CTA）。如果假设一共有 8 个 SM，然后我们使用 8 个常驻 CTA，总共合起来计算 8x8 = 64 个 output tiles，每个 CTA 正好分到 8 个。那结合了 persistent kernel 以及 CTA swizzle 二者之后，每个 CTA 分配到的 output tiles 则如下图所示，左边是 row-major 顺序，右边是 GSM=4 的 grouped 顺序。
 
 ![persistent grid 与 CTA swizzle 结合后的 output tile 分配](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/persistent-swizzle.png)
-
-图中每个 tile 上标注的是负责它的 CTA，左上角的小号数字则是该 tile 在遍历顺序中的序号 i（和上一张图里的编号是同一套），CTA 号即 i mod 8。粗框圈出的是 i = 0..7 这一批，也就是 8 个 CTA 在外层循环第一轮里同时在算的那些 tile：row-major 下它们摊在同一行上，需要 1 条 A 行条加 8 条 B 列条；grouped 下它们聚成一个 4x2 的方块，只需要 4 条 A 加 2 条 B —— 这正是上一节 CTA swizzle 想要的效果，而 persistent 与否并不改变它。此后每个 CTA 沿着同样的顺序往后跳 8 个 tile 取自己的下一个 output tile，一共走 8 轮。
 
 这个 persistent kernel 的部分，我们在以下伪代码中称为外层循环，即每一次迭代计算一个不同的 output tile。与此同时，还会有一个内层循环，因为每计算一个 output tile 便需要分成 ceil(K/BK) 步完成计算，即每次加载 BMxBK 的 A 数据，和 BKxBN 的 B 数据，我们也把这个内层循环称为 k tile 迭代。
 
