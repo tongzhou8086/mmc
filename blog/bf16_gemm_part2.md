@@ -2,7 +2,7 @@
 
 不论流水线怎么编排，数据流动的总体步骤都是一样的，不同方案的区别在于同步方案、数据读写的次序和粒度、tile sizes 的配置、各种容器（buffer）的数量和大小等等。为了能把这些区别讲清楚，我们先建立一个数据流模型。
 
-### 数据流动的四种 buffer 类型
+### 数据在内存和四种 Buffer 之间流动
 
 本文所探讨的所有流水线调度方式，数据都会在以下四类容器之间流动：
 
@@ -11,14 +11,14 @@
 * tcgen05.ld buffer（位于寄存器，即 RMEM，Register Memory）: 存放从 TMEM 中读取的结果
 * Store buffer（位于 SMEM）: 存放要写入内存的数据
 
-具体一种类型的 buffer 会在 GPU 片上有自己的物理存储介质 —— 如下图所示。TMA buffer 和 Store buffer 同属 SMEM 介质、要互相抢容量，MMA buffer 则独占 TMEM 空间，而 tcgen05.ld buffer 是寄存器文件中的一部分 —— 寄存器的其余部分还要用于地址计算、循环变量、各 warp 的私有状态等等。
+事实上内存也是一种 buffer，数据会最初来自于内存，最后又流入内存。但由于从流水线资源调度的视角，内存并不参与。
+上述任何一种类型的 buffer 都会在 GPU 片上有自己的物理存储介质 —— 如下图所示。TMA buffer 和 Store buffer 同属 SMEM 介质、要互相抢容量，MMA buffer 则独占 TMEM 空间，而 tcgen05.ld buffer 是寄存器文件中的一部分 —— 寄存器的其余部分还要用于地址计算、循环变量、各 warp 的私有状态等等。
 
 ![四种 buffer 的物理载体](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/sm-storage-map.png)
 
-事实上内存也是一种 buffer，数据会最初来自于内存，最后又流入内存。但由于从流水线资源调度的视角，内存并不参与，所以这里略去不表。
 
 ### 针对 Buffer 的五种操作
-本文探讨的所有 GEMM kernel 设计，都会涉及到下述五种对容器的操作，每一种操作会从一个源 Buffer 读取数据，并将操作后的结果写入目的 Buffer —— 从数据流的角度，可以视为数据从源 Buffer 流入了目的 Buffer。
+GEMM kernel 的运行都会涉及到下述五种对容器的操作，每一种操作会从一个源 Buffer 读取数据，并将操作后的结果写入目的 Buffer —— 从数据流的角度，可以视为数据从源 Buffer 流入了目的 Buffer。
 
 这五种操作分别是：
 
@@ -32,7 +32,7 @@
 
 ![5 种操作及其源和目的 buffer](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/operations-chain.png)
 
-第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果必须保存在 TMEM 中，当一个 output tile 所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 [tcgen05.ld](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tcgen05%2520ld#tcgen05-matrix-fragments-shape-3232b)，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld 读取到寄存器中的数据是[按列分布](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tcgen05%2520ld#tcgen05-matrix-fragments-shape-3232b)到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的 layout 方式使得，如果你直接将寄存器结果写入内存就会导致一个 warp 中不同线程按列写入，即 uncoalesced memory access。于是在我们所有的设计中，都会将 tcgen05.ld 的结果先写入一个 SMEM 缓冲区，在缓冲区进行重组，每行能够凑满 128 个连续字节了再进行 coalesced memory write，这也便是最后的两步。
+第一个操作 TMA load 是从内存中读取用来做矩阵乘法的输入数据，这个好理解；第二个操作，MMA，即是对输入数据进行矩阵乘法操作，这个也好理解；第三个操作是什么呢？事实上，这里的背景是 MMA 的结果必须保存在 TMEM 中，当一个 output tile 所有的 MMA 都计算完毕，你必须先从 TMEM 中将计算完的结果读取到寄存器中才能进行后续的操作，譬如写回内存等等。将数据从 TMEM 中读取到寄存器中使用的指令系列叫做 [tcgen05.ld](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tcgen05%2520ld#tcgen05-matrix-fragments-shape-3232b)，于是我们把这个操作称为 tcgen05.ld，这是第三个操作；接下来的操作称为 stage，这里又需要一些背景，即按照 Blackwell 架构的设计，通过 tcgen05.ld 读取到寄存器中的数据是[按列分布](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tcgen05%2520ld#tcgen05-matrix-fragments-shape-3232b)到各线程中的，也就是说，一个线程会拥有同一行上连续的数据。这样的 layout 方式使得，如果直接将寄存器结果写入内存就会导致一个 warp 中不同线程按列写入，产生 [uncoalesced memory access](https://developer.nvidia.com/blog/unlock-gpu-performance-global-memory-access-in-cuda/)。于是在我们所有的设计中，都会将 tcgen05.ld 的结果先写入一个 SMEM 缓冲区，在缓冲区进行重组，每行能够凑满 128 个连续字节了再进行 coalesced memory write，这也便是最后的两步。
 
 ### 操作之间同步的法则
 划重点来了！！上述的任何一个操作要能够开始，但必须同时满足以下两个条件：
