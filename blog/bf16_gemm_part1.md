@@ -97,6 +97,6 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
     store(C, tile.m, tile.n, acc)            # K 维度累加完毕，写回这块 BM x BN 的结果，又称为 epilogue
 ```
 
-> 一点说明：上面为了叙述简洁，都是以「一个 CTA 算一个 output tile」来描述的。若开启前面讲的 2-CTA MMA，则应把这里的「一个 CTA」理解成「一个 2-CTA cluster」—— 分配的单位是 cluster，实际 launch 的 CTA 数是上述数字的两倍，一个 cluster 负责的输出块高度也变成 2BM。后文仍沿用以 CTA 为单位的说法。
+> 一点说明：上面为了叙述简洁，都是以「一个 CTA 算一个 output tile」来描述的。若开启前面讲的 2-CTA MMA，则应把这里的「一个 CTA」理解成「一个 2-CTA cluster」—— 分配的单位是 cluster，实际 launch 的 CTA 数是上述数字的两倍，一个 cluster 负责的输出块高度也变成 2BM。
 
 外层循环的每一轮产出一整块 output tile，内层循环的每一轮只推进 BK 这一步 —— 后文所有的流水线设计，本质上都是在给这两层循环里的 load、MMA、epilogue 安排先后顺序和重叠方式，而循环结构本身是不变的。在下一部分中，我们会介绍流水线的每一个阶段，以及各自操作的容器，和因此产生的依赖关系。
