@@ -15,6 +15,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Rectangle
 
+# hairline hatching: the stall boxes are annotation, not another operation
+plt.rcParams["hatch.linewidth"] = 0.7
+
 OUTDIR = Path(__file__).with_name("figures")
 
 INK = "#1f2933"
@@ -322,6 +325,13 @@ SB_ROWS = ["TMA load", "MMA", "tcgen05.ld", "stage", "TMA store"]
 TMA_COLOUR = ["#a9c4de", "#5b82ab"]         # TMA buffer copy 0, copy 1
 ACC_COLOUR = ["#a9d3b0", "#4f8a5c"]         # MMA buffer copy 0, copy 1
 PLAIN = "#c7cfd8"                            # buffers that are never doubled
+
+# The two kinds of MMA-issue gap, drawn straight into the MMA row. Hatched
+# rather than solid, so a stall never reads as one more operation, and in two
+# hues because the text treats them as two different dependences.
+# (fill, ink) - the ink is both the hatch colour and the label colour.
+STALL_STYLE = {"RAW": ("#f3dcdf", "#a8515c"),
+               "WAR": ("#e2dbf0", "#6a58a0")}
 ROW_FAMILY = [TMA_COLOUR, ACC_COLOUR, None, None, None]
 
 # (row, t0, t1, label, copy) where copy is the buffer copy this step is using:
@@ -335,6 +345,11 @@ BARS_1BUF = [(0, 0, 1, "k=0", 0), (1, 1, 2, "k=0", 0),
              (0, 6, 7, "k=1", 0), (1, 7, 8, "k=1", 0),
              (2, 8, 9, "", 0), (3, 9, 10, "", 0), (4, 10, 11, "", 0)]
 BRACKETS_1BUF = [(0, 7, "output tile 0"), (4, 11, "output tile 1")]
+
+# Every gap in the MMA row (row 1), and which dependence causes it: inside a
+# tile the next MMA waits for its TMA load (RAW), between tiles it waits for
+# tcgen05.ld to drain the accumulator (WAR).
+STALLS_1BUF = [(1, 2, 3, "RAW"), (1, 4, 5, "WAR"), (1, 6, 7, "RAW")]
 
 # Two TMA buffers: the loads alternate between the two copies, which is why the
 # k=1 load can run while MMA k=0 still reads the k=0 copy. Only one accumulator,
@@ -359,7 +374,8 @@ BARS_2ACC = [(0, 0, 1, "k=0", 0), (0, 1, 2, "k=1", 1),
 BRACKETS_2ACC = [(0, 6, "output tile 0"), (2, 8, "output tile 1")]
 
 
-def _op_timeline(path, bars, brackets, title, subtitle, xmax, legend):
+def _op_timeline(path, bars, brackets, title, subtitle, xmax, legend,
+                 stalls=()):
     H, DY = 0.66, 1.0
     NR = len(SB_ROWS)
     row_y = lambda r: (NR - 1 - r) * DY
@@ -392,6 +408,19 @@ def _op_timeline(path, bars, brackets, title, subtitle, xmax, legend):
             ax.text((t0 + t1) / 2, y + H / 2, label, ha="center", va="center",
                     fontsize=9.5, fontweight="bold", color=INK, zorder=4)
 
+    # the gaps in the MMA row, named. Each one is an MMA that could not be
+    # issued yet, so it is drawn in the MMA row itself rather than annotated
+    # from outside it.
+    for r, t0, t1, kind in stalls:
+        fill, ink = STALL_STYLE[kind]
+        y = row_y(r)
+        ax.add_patch(Rectangle((t0 + 0.025, y), t1 - t0 - 0.05, H,
+                               facecolor=fill, edgecolor=ink, linewidth=1.1,
+                               hatch="///", zorder=2))
+        ax.text((t0 + t1) / 2, y + H / 2, kind, ha="center", va="center",
+                fontsize=9, fontweight="bold", color=ink, zorder=4,
+                bbox=dict(facecolor=fill, edgecolor="none", pad=1.6))
+
     for k, (t0, t1, text) in enumerate(brackets):
         tile_bracket(t0, t1, NR * DY + 0.16 + 0.58 * k, text)
 
@@ -406,10 +435,13 @@ def _op_timeline(path, bars, brackets, title, subtitle, xmax, legend):
     # colour key in the empty margin at the lower left. It used to sit at the
     # bottom right, on the same line as the time arrow, where it read as one
     # more row of the timeline.
-    for k, (colour, text) in enumerate(legend):
+    for k, entry in enumerate(legend):
+        colour, text = entry[0], entry[1]
+        ink = entry[2] if len(entry) > 2 else "white"
         ky = base - 0.42 - k * 0.36
         ax.add_patch(Rectangle((-2.35, ky), 0.30, 0.24, facecolor=colour,
-                               edgecolor="white", linewidth=1.0))
+                               edgecolor=ink, linewidth=1.0,
+                               hatch="///" if len(entry) > 2 else None))
         ax.text(-1.93, ky + 0.02, text, ha="left", va="bottom", fontsize=9.5,
                 color=MUTED)
 
@@ -434,7 +466,13 @@ def single_buffer_timeline(path):
     _op_timeline(path, BARS_1BUF, BRACKETS_1BUF, "One buffer of each kind",
                  "every consecutive pair shares a buffer, so within one tile "
                  "nothing overlaps at all",
-                 11, [])
+                 11,
+                 [(STALL_STYLE["RAW"][0], "RAW stall - MMA waits for its "
+                   "TMA load", STALL_STYLE["RAW"][1]),
+                  (STALL_STYLE["WAR"][0], "WAR stall - MMA waits for "
+                   "tcgen05.ld to drain the accumulator",
+                   STALL_STYLE["WAR"][1])],
+                 stalls=STALLS_1BUF)
 
 
 def two_tma_buffer_timeline(path):
