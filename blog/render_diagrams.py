@@ -172,7 +172,7 @@ def two_cta_mma(path):
         cta_label(ax, y0, name)
     _dim(ax, 0, -2.25, BN, -2.25, "BN", offset=(0, 0.22), fontsize=11)
     frame(ax, "2-CTA MMA off:  two independent CTAs",
-          "each CTA loads the whole B tile — B crosses the bus 2×")
+          "each CTA loads the whole B tile")
 
     # ---- right: 2-CTA on -------------------------------------------------
     ax = axes[1]
@@ -204,7 +204,7 @@ def two_cta_mma(path):
     _dim(ax, BN + 0.30, -BM, BN + 0.30, BM, "2BM", offset=(0.42, 0),
          fontsize=11)
     frame(ax, "2-CTA MMA on:  one cluster, one 2BM × BN output",
-          "B is split BN/2 per CTA — B crosses the bus 1×")
+          "B is split BN/2 per CTA")
 
     handles = [Rectangle((0, 0), 1, 1, facecolor=CTA0_FILL, edgecolor=EDGE,
                          linewidth=1.0),
