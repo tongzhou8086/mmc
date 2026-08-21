@@ -31,9 +31,9 @@ $$ A.I. = \frac{(2\times BM \times BN \times BK)}{2\times BM \times BK + 2\times
 
 
 ### Blackwell 的异步设计 —— 软件成为调度者
-流水线的调度设计，本质上就是编写一个软件，使得这个软件能够高效的对于其背后的硬件进行调度。而需要被调度的硬件计算/数据搬运单元大概有这么三种：TMA（Tensor Memory Accelerator）、MMA（Matrix Multiply Accumulate）以及 CUDA core 或者 Integer core。TMA 是自 Hopper 架构以后引入的一种独立的硬件单元，用来异步的在内存和 SMEM 之间传输数据，既可以将内存数据加载到 SMEM 中，也可以将 SMEM 中的数据写入到内存。由于是独立的硬件单元，TMA 的运作便不再占用 CUDA Cores 或 integer Cores的算力，而可以独立异步地运行。与此同时，它还硬件支持数据的 swizzling。所以在本文所探讨的所有的流水线的编排方案之中，都会默认使用 TMA 来加载数据以及写入数据。相比传统的 SIMT 式的数据搬运方式，即所有线程都需要参与，使用 TMA 只需要一个 warp 的一个线程发出 TMA 指令即可，也称为 bulk load —— 批量加载。
+流水线的调度设计，本质上就是编写一个软件，使得这个软件能够高效的对于其背后的硬件进行调度。而需要被调度的硬件计算/数据搬运单元大概有这么三种：TMA（Tensor Memory Accelerator）、MMA（Matrix Multiply Accumulate）以及 CUDA core 或者 Integer core。TMA 是自 Hopper 架构以后引入的一种独立的硬件单元，用来异步的在内存和 SMEM 之间传输数据，既可以将内存数据加载到 SMEM 中，也可以将 SMEM 中的数据写入到内存。由于是独立的硬件单元，TMA 的运作便不再占用 CUDA Cores 或 integer Cores的算力，而可以独立异步地运行。与此同时，它还硬件支持数据的 swizzling。所以在本文所探讨的所有的流水线的编排方案之中，都会默认使用 TMA 来加载数据以及写入数据。相比传统的 SIMT 式的数据搬运方式，即所有线程都需要参与，使用 TMA 只需要一个 warp 的一个线程发出 [TMA 指令]((https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/async-copies.html#using-the-tensor-memory-accelerator-tma))即可，也称为 bulk load —— 批量加载。
 
-Blackwell 的 MMA 单元则是新一代的 Tensor Core Engine，和 TMA 单元类似，他们都处于一个 SM 内部，都是可以独立异步运作的硬件单元。从软件的角度，也只需要一个 warp 的一个线程发送 MMA 指令，MMA 单元便可以在背后异步地进行 MMA 运算。其实，也正是因为 TMA 和 MMA 单元都是异步的，才会使得流水线的设计大放异彩 —— 软件的功能更趋近于一个“调度者”的角色，而很多的操作都是专门的硬件在背后异步地完成。
+Blackwell 的 MMA 单元则是新一代的 Tensor Core Engine，和 TMA 单元类似，他们都处于一个 SM 内部，都是可以独立异步运作的硬件单元。从软件的角度，也只需要一个 warp 的一个线程发送 [MMA 指令](https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/guides/mma/tcgen05_programming.html)，MMA 单元便可以在背后异步地进行 MMA 运算。其实，也正是因为 TMA 和 MMA 单元都是异步的，才会使得流水线的设计大放异彩 —— 软件的功能更趋近于一个“调度者”的角色，而很多的操作都是专门的硬件在背后异步地完成。
 
 TMEM 也是 Blackwell 引入的一种新的硬件单元，但它是一种存储介质，以一种类似于矩阵的方式组织，有 128 行、512 列，每一个 cell 可以存放一个 float 类型，4 个字节，总容量为 256K。根据 Blackwell 的设计，MMA 的结果只能存放在 TMEM 中，而操作数可以放在 SMEM 或 TMEM 中。不过，在我们后续的讨论中，我们都会默认操作数就放在 SMEM 中，即 MMA 单元从 SMEM 中读取数据，在 TMEM 中存放累加的结果。
 
