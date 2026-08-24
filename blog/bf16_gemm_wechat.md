@@ -53,9 +53,19 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 在实际实现中，我们会开启的两种优化 2-CTA MMA 以及 CTA swizzle 会对如上的代码框架进行轻微调整，但是框架的本质并不会做任何变化。它本质上传达了这样一种流程：数据从内存被按块加载到 GPU 片上，之后会进入 Tensor Core 单元进行 MMA 操作。K 层循环结束，即代表一个输出块的结果计算完毕，这时便将结果写入内存。按照这样的流程依次计算所有分配给当前 CTA 的 output tiles。
 
 ### 数据流经的 4 种片上容器（buffer）
-当数据按照上述流程完成计算时，它会流经四种逻辑上的片上容器：
+我们上述的伪代码是比较宏观的和架构无关的，但在具体的流水线设计中，我们则会引入以下五种 Blackwell 架构特定的操作以及五种逻辑容器，每一种操作会从一种容器里读入数据，然后结果会写入另一种容器。
 
-* TMA buffer: 存放 TMA 从内存（GPU global memory）中加载的数据
+![5 种操作及其源和目的 buffer](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/operations-chain.png)
+
+其中，TMA load、MMA 以及最后的 TMA store 操作可以直接对应到上述伪代码中的`load`，`a_tile @ b_tile`和`store(C, tile.m, tile.n, acc)`部分。而剩下的两种操作 tcgen05.ld 和 stage，则是 Blackwell 特定的、上述架构无关的伪代码中没有体现出来的。它们存在的原因是因为，根据 Blackwell 架构设计，MMA 的结果必须存储在 TMEM 中，而 TMEM 中的结果必须先通过 tcgen05.ld 系列指令读取到寄存器中以后才能进行后续操作，譬如 epilogue 或写回内存。于是，这里我们便多了一个 tcgen05.ld 操作。与此同时，由于 tcgen05.ld 是按列进行数据读取的，如果将它们的结果直接写入内存，就会导致 uncoalesced memory write。于是我们会先把寄存器中的数据，在 store buffer / SMEM 中做一个临时的缓冲与重组，当一行凑满连续的 128 个字节了，再进行内存写入，直接 issue 一个 TMA store 指令，便能达到 coalesced memory write 的效果。这便是 stage 操作的来历。
+
+> 值得说明的是，我们不保证所有情况下使用 TMA store buffer 进行缓冲后再写入内存都是最高效的，另一种不同的设计完全可以为了节省 SMEM 空间而直接进行 uncoalesced memory write，本文这里探讨的是一种比较通用的设计框架，不保证在任何情况下都是最高性能，但是是比较通用的。
+
+
+
+四种 Blackwell 架构相关的片上容器，我们先看这四种容器分别是什么，然后再和以上的伪代码对应起来。
+
+* TMA buffer: 存放 TMA 从内存（GPU global memory）中加载的数据，对应上述代码的 `load` 部分
 * MMA buffer: 存放 MMA 的中间结果以及最终结果
 * tcgen05.ld buffer: 存放从 TMEM 中读取的结果，即 MMA 的结果
 * Store buffer: 存放要写入内存的数据，即 MMA 的结果做过一些重排或者特定 epilogue 后的状态
