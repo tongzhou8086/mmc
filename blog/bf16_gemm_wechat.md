@@ -201,3 +201,7 @@ for tile in my_output_tiles:
 ![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/perf-bn256.png)
 
 
+### 结语
+我们这个优化系列的第一篇就写到这里，这是这个系列的第一篇，我们介绍了主旨思想，即从流水线编排的视角来看待矩阵乘法的设计与实现，以及呈现了一个流水线的理论框架。我们也给出了第一种流水线编排设计，尽管性能数字尚未跑赢 CUBLAS，但是它已经为我们后续的设计奠定了一个坚实的基础。Stay tuned for the next article！
+
+
