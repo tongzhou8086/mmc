@@ -29,9 +29,9 @@ $$ A.I. = \frac{(2\times BM \times BN \times BK)}{2\times BM \times BK + 2\times
 现代 GPU 的标配便是在 SM 中配置一个独立的 Tensor Core 单元，用来完成矩阵乘法计算 —— 相当于在通用硬件里面放置了一小块专用硬件，来提高计算效率。从 Hopper 架构开始，又出现了一种新的独立硬件单元，专门负责数据搬运，叫做 TMA。相比传统的 SIMT 式的数据搬运指令，即所有的线程都需要参与，用 TMA 完成数据搬运只需要一个线程发出指令，然后由专用硬件在背后异步完成。
 Blackwell 架构将这种单线程发出指令、专用硬件背后完成异步计算的方式进一步推到了极致：无论是 Tensor Core 单元还是 TMA 单元，都只需要一个线程进行指令发射，然后背后的硬件异步完成运算。从软件的角度，这意味着矩阵乘法计算以及数据搬运不再采用传统的 SIMT 模型。GPU 也并非完全摒弃了 SIMT 计算能力，SIMT 算力依然存在。只不过现在做了分工 —— TMA 负责内存与 GPU 片上之间的数据搬运，异步运行；Tensor Core 负责矩阵乘法计算，也是异步运行；而 SIMT 算力则负责其他的，譬如将计算结果在 SMEM 中进行重组、或者特定的 epilogue 计算，同步运行。
 
-这种高度异步化的架构设计的结果就是，软件更多成为了一个调度者的角色，调度 TMA 指令和 MMA 指令什么时候、以何种顺序发射，以及何时进行同步的 epilogue 等等。除了指令的交织与调度，还有一种资源，便是片上的存储资源，即 SMEM 和寄存器如何进行分配？划分出多少用于辅助 TMA、MMA 或者是 epilogue？于是，本文从流水线指令与资源调度这样一个视角来展开全文。鉴于篇幅限制，这里我们仅借做一个概述，更多的关于 Blackwell 的硬件特性请参考[Blackwell 架构背景篇]。
+这种高度异步化的架构设计的结果就是，软件更多成为了一个调度者的角色，调度 TMA 指令和 MMA 指令什么时候、以何种顺序发射，以及何时进行同步的 epilogue 等等。除了指令的交织与调度，还有一种资源，便是片上的存储资源，即 SMEM 和寄存器如何进行分配？划分出多少用于辅助 TMA、MMA 或者是 epilogue？本文正是从流水线指令与资源调度这样一个视角来展开全文。鉴于篇幅限制，这里我们仅借做一个概述，更多的关于 Blackwell 的硬件特性请参考[Blackwell 架构背景篇]，硬件架构特性实际上会成为流水线设计的 constraints。
 
-### 流水线资源调度
+## 流水线资源调度
 在介绍流水线的资源调度之前，我们先看一下 GEMM kernel 代码的整体框架，以便对数据的生产与消费流程有一个宏观的认知。首先大小为 M x N 的输出矩阵被以 BMxBN 的块大小划分成 M/BM x N/BN 块，每一块就是一个独立的计算任务（output tile）。计算任何的 BM x BN 一小块都需要在 K 维度进行迭代，即每次处理 BK，分 K/BK 步进行。与此同时，由于同一个 CTA 会处理多个 BM x BN 的块（即 persistent kernel，一个 CTA 会常驻在一个 SM 上），于是还会存在一个外层循环，来对不同的块进行迭代。两者循环嵌套起来，便可以得到如下的代码框架：
 
 ```text
@@ -51,4 +51,29 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 ```
 
 在实际实现中，我们会开启的两种优化 2-CTA MMA 以及 CTA swizzle 会对如上的代码框架进行轻微调整，但是框架的本质并不会做任何变化。它本质上传达了这样一种流程：数据从内存被按块加载到 GPU 片上，之后会进入 Tensor Core 单元进行 MMA 操作。K 层循环结束，即代表一个输出块的结果计算完毕，这时便将结果写入内存。按照这样的流程依次计算所有分配给当前 CTA 的 output tiles。
+
+### 数据流经的 4 种片上容器（buffer）
+当数据按照上述流程完成计算时，它会流经四种逻辑上的片上容器：
+
+* TMA buffer: 存放 TMA 从内存（GPU global memory）中加载的数据
+* MMA buffer: 存放 MMA 的中间结果以及最终结果
+* tcgen05.ld buffer: 存放从 TMEM 中读取的结果，即 MMA 的结果
+* Store buffer: 存放要写入内存的数据，即 MMA 的结果做过一些重排或者特定 epilogue 后的状态
+
+由于硬件限制，上述 4 种片上容器的物理存储介质分别是，TMA buffer 和 Store buffer 都使用 SMEM（TMA 单元通过 SMEM 与内存交换数据），MMA buffer 使用 TMEM（MMA 的结果必须存放在 TMEM 中），而 tcgen05.ld buffer 使用寄存器（TMEM 中的结果必须先读取到寄存器中才能进行后续操作）。从一致性的角度来讲，TMA buffer 和 Store buffer 更完整的名称应该分别叫做 TMA load buffer 以及 TMA store buffer，本文我们将它们统一简称为 TMA buffer 以及 Store buffer。
+
+值得一提的是，For completeness，内存也是一种 buffer，数据会最初来自于内存，最后又流入内存。但由于从流水线资源调度的视角，内存并不参与，所以这里略去不表。
+
+![四种 buffer 的物理载体](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/sm-storage-map.png)
+
+### 针对 Buffer 的五种操作（operation）
+从上述我们提供的代码宏观框架中，我们可以抽象出 5 种操作，每种操作分别有一个源容器和目的容器，即，该操作从源容器中读取数据，而操作的结果被写入目的容器。这五种操作分别是：
+
+* TMA load: 从内存读取数据，写入 TMA buffer
+* MMA: 从 TMA buffer 读取数据，结果写入 MMA buffer
+* tcgen05.ld: 从 MMA buffer 读取数据，写入 tcgen05.ld buffer
+* stage: 从 tcgen05.ld 读取数据，写入 store buffer
+* TMA store: 从 store buffer 读取数据，写入内存
+
+前面两种操作 TMA load 和 MMA 的意义一目了然。第三步之所以需要 tcgen05.ld 操作，是因为根据 Blackwell 的设计 TMEM 中的计算结果必须要先搬运到寄存器中以后才能进行后续操作，譬如写回内存。这个搬运操作的指令系列叫做 [tcgen05.ld](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html?highlight=tcgen05%2520ld#tcgen05-matrix-fragments-shape-3232b)，于是我们才把这个操作称为 tcgen05.ld。此外，stage 操作的意义在于，如果将 tcgen05.ld 到寄存器中的结果（不同的线程按列读取）直接写入内存，会导致 uncoalesced memory access，即同一个 Warp 中的不同线程会按列写入。于是我们会先将寄存器中的结果先写入 SMEM，做一个临时的缓冲与重组。当一行凑满连续的 128 个字节了，再进行内存写入，直接 issue 一个 TMA store 指令，便能达到 coalesced memory write 的效果。
 
