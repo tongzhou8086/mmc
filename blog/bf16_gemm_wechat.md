@@ -61,3 +61,50 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 > 值得说明的是，我们不保证所有情况下使用 TMA store buffer 进行缓冲后再写入内存都是最高效的，另一种不同的设计完全可以为了节省 SMEM 空间而直接进行 uncoalesced memory write，本文这里探讨的是一种比较通用的设计框架，不保证在任何情况下都是最高性能，但是是比较通用的。
 
+### 容器的状态翻转与操作之间的同步法则
+上图中我们也可以看出，既然同一个容器会被一个操作读，也会被另一个操作写，那为了保证操作的正确性，我们需要保证操作的原子性，即，同一时间，任何一个容器无法同时既被读也被写。于是我们给所有的容器都分配两种互斥的状态：可读和可写。一个操作的完成，即产生一个事件，可以翻转容器的状态。假设一个容器的初始状态为“可写”，然后写操作开始，容器里被灌入新的数据，当写操作结束时，容器的状态即翻转为“可读”，代表数据已经就绪。类似地，假如一个容器的状态为“可读”，然后读操作开始，容器里的数据逐渐被消费。当读操作结束时，容器的状态即翻转为“可写”，代表数据已被消费完，内容可以被覆盖了。
+
+于是可以自然地推导出，任何一个操作要能够开始必须同时满足的两个条件是：
+* 源 Buffer 可读
+* 目的 Buffer 可写
+
+这是整个流水线调度设计正确性保障的根本原理。
+
+> 对于 TMA load 和 store 操作而言，内存可以视为总是可读或者总是可写
+
+延伸一下，我们可以推导出，任意两个操作要能够同时并行运行的条件：
+
+* 其中一个操作的源 buffer 不是另一个操作的目的 buffer
+
+### 单 buffer 的流水线时序图
+根据上面的同步法则，我们可以推导出在所有 buffer 只配置一份的情况的流水线的时序图，即：
+
+* TMA load 不能与 MMA 同时运行，但是可以和 tcgen05.ld 及其后续操作同时运行
+* MMA 不能与 TMA load 或者 tcgen05.ld 同时运行，但是可以和 stage 以及 TMA store 同时运行
+* 以此类推等等
+
+假设每个 output tile 只需要两轮内层循环，即 K = 2*BK，也假设只有两个 output tile，我们可以画出如下的流水线时序图。
+
+![单 buffer 配置下的流水线时序（K = 2·BK）](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/single-buffer-timeline.png)
+
+让我们把视线专注在 MMA 的 issue 那一行，会发现它有两种类型的停顿，而它们恰好对应经典的两种数据依赖：
+
+* **RAW 停顿**：同一个 output tile，不同的 k tile 之间存在停顿，需要等待 TMA load 的结束。MMA 要读的那份数据得先由 TMA load 写进去，这是一个 true dependence（read after write）。
+* **WAR 停顿**：不同的 output tile 交接时，也存在空挡，需要等待 tcgen05.ld 的结束。MMA 要写的那块 accumulator 得先被 tcgen05.ld 读走，这是一个 anti dependence（write after read）。
+
+这两种依赖，其实正是前面同步法则的两半：「源 buffer 可读」说的是 true dependence 已经满足，「目的 buffer 可写」说的是 anti dependence 已经满足。
+
+### 解决 RAW 停顿
+
+RAW 停顿来源于 read-after-write 数据依赖，减少停顿的方法则是预取（prefetch）数据，即 read 的时候同时开始下一轮的 write，这样可以减少下次 read 的时候的等待。这样的数据预取需要我们使用多个 TMA buffer，即当一个 MMA 开始时，与此同时，TMA load 可以同时开始往另一个 buffer 里面写入。
+下图演示使用两个 TMA buffer 的情况，实际具体用几个 TMA buffer 最优取决于 MMA 和 TMA load 的时长比例。
+
+![两份 TMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-tma-buffer-timeline.png)
+
+### 解决 WAR 停顿
+
+WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的依赖，在编译原理以及计算机体系结构中的标准解决方案就是让 write 写入一个新的 buffer，在计算机体系结构中，这个被称为 register renaming。于是这里我们通过增加一个 MMA buffer，便能够使得 MMA 操作和 tcgen05.ld 操作重叠起来 —— 各自操作不同的 MMA buffer，如下图所示：
+
+![两份 TMA buffer 加两份 MMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-accumulator-timeline.png)
+
+这下 MMA 那一行从头到尾连成了一片，再没有空档 —— 而 MMA 能持续 issue，正是整个流水线编排追求的目标。
