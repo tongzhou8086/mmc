@@ -11,7 +11,7 @@
 之后我们以单 buffer 为例，阐述流水线的时间线，从而看出两类会导致流水线上 MMA issue 停顿的原因，而它们恰好就是两种经典的数据依赖：源 Buffer 不可读造成的 **RAW 停顿**，即一个输出块（output tile）内部由于需要等待 TMA load 数据的就绪；以及目的 Buffer 不可写造成的 **WAR 停顿**，即多个 output tile 之间由于需要等待 MMA buffer 中的数据完成 draining 才能再次写入。针对这两类停顿，我们分别给出了解决方案。
 后面第三和第四部分是实现篇，它们实现篇会直接继承理论分析的结果，将它们转化成对应的 CUDA Kernel（文中是以伪代码的形式呈现）。作为例子，我们会呈现四种不同的设计方案，围绕着如何一步步减少上述 RAW、WAR 这两类停顿而展开。
 
-## 背景篇
+## 理论篇
 
 ### 分块矩阵乘法与算术强度
 矩阵乘法的计算模式，天然适合于“分块”（Tiling）这样一种优化方式，即每次加载一小块输入到片上，也只计算一小块输出。这样的好处是提高数据局部性，充分使用每一小块的数据进行计算，减少对于全局内存的冗余访问。这里我们假定读者已对数据局部性、分块等基础背景具有相当的了解，便不再赘述其[基本原理](https://zhuanlan.zhihu.com/p/292539074)，直接探讨分块的大小如何影响流水线的编排。
@@ -108,3 +108,94 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 ![两份 TMA buffer 加两份 MMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-accumulator-timeline.png)
 
 这下 MMA 那一行从头到尾连成了一片，再没有空档 —— 而 MMA 能持续 issue，正是整个流水线编排追求的目标。
+
+## 实现篇
+
+### 各类容器大小的计算方式
+流水线设计的第一步便是计算上述的各类容器的大小，TMA buffer 和 MMA buffer 的大小取决于 BM、BN、BK 的配置
+
+### 第一种设计：BN256
+现在我们介绍第一种流水线编排设计。尽管相对基础，它已经使用多个 TMA buffer 来减少 RAW 停顿，以及使用两个 MMA buffer 来减少 WAR 停顿。任何一种流水线设计，我们都需要首先确定 BM、BN、BK 如何配置，由此便能计算各种 buffer 的大小，然后便能计算每一种 buffer 可以配置几个。我们先看 BM 和 BN 的配置。
+由于 MMA buffer 的物理存储介质是 TMEM（128行 x 512列），BM 实际上由于硬件限制被固定为 128，与此同时，为了配置两个 MMA buffer 来减少上述的 WAR 停顿，我们将 BN 配置为 512/2 = 256。我们再看 BK 的配置，由于 BK 是 A tile 的 inner dimension，所以考虑到一些内存访问的连续性，我们会将 BK 配置为 64 的倍数，因为在 BF16 数据类型的情况下，BK 等于 64 的倍数，便能得到 128 个连续字节的内存访问模式，不会浪费任何内存带宽。这样我们便能得出逻辑上 A tile 和 B tile 的大小（字节数）分别为：
+
+* A tile：128 * 64 * 2
+* B tile：64 * 256 * 2
+
+与此同时，由于 2 CTA MMA 的开启，对于 B tile，一个 cluster 中的两个 CTA 分别只需要加载 B tile 的一半即可，另一半 B tile 数据可以直接从隔壁 SM 读取，这样便使得这个 Tile Sizes 的配置下，一个 A Tile 和 B tile 占用的空间分别是 16KB，一共便是 32KB，也就是一个 TMA buffer 的大小。而一个 store buffer 的大小是 16KB。这里，我们选择配置 6 个 TMA buffer，加上 2 个 store buffer，这样占用的 SMEM 空间正好是  `32*6 + 16*2 = 224KB`，刚好在 227KB 的容量范围内。
+
+tcgen05.ld buffer 的话，我们总是只会配置一个，大小为 128 行 x 64 列，即每次从 MMA buffer 中读取 64 列数据。这里我们没有配置多个 tcgen05.ld buffer，而是让 epilogue warps 串行地进行 tcgen05.ld 和 stage 操作。
+
+确定了参数配置，我们再来看流水线的调度逻辑，这里我们使用上面这套原语来表达：
+
+```text
+# ── 参数 ──────────────────────────────────────────────
+NS        = 6              # TMA buffer 个数
+NUM_ACC   = 2              # MMA buffer 个数（BN=256，TMEM 刚好放得下两个）
+NUM_STORE = 2              # store buffer 个数
+STORE_N   = 64             # 每次 TMA store 的列数
+num_k     = K / BK         # 每个 output tile 需要的 k 迭代次数
+
+# ── Buffer 配置 ───────────────────────────────────────
+tma_buffers   = [TMA_Buffer(32KB)        for _ in range(NS)]
+mma_buffers   = [MMA_Buffer(128KB)       for _ in range(NUM_ACC)]
+ld_buffer     =  TCGEN05_LD_Buffer(32KB)
+store_buffers = [Store_Buffer(16KB)      for _ in range(NUM_STORE)]
+
+# ── TMA Warp ─────────────────────────────────────────
+gk = 0
+for tile in my_output_tiles:                 # 持久化 kernel：每个 CTA 处理若干 output tile
+    for k in range(num_k):
+        s = (gk++) % NS                      # 在 NS 个 buffer 上轮转
+        wait_until_free(tma_buffers[s])
+        tma_load_async(A, tile.m, k * BK, BM,     BK,       tma_buffers[s], 0)
+        tma_load_async(B, k * BK, tile.n, BK,     BN / 2,   tma_buffers[s], 16KB)
+        make_ready_on_tma_done(tma_buffers[s])
+
+# ── MMA Warp ─────────────────────────────────────────
+gk = 0
+for tile in my_output_tiles:
+    acc = tile % NUM_ACC                     # 每换一个 output tile 就换一个 MMA buffer
+    for k in range(num_k):
+        s = (gk++) % NS
+        wait_until_ready(tma_buffers[s])
+        if k == 0:
+            wait_until_free(mma_buffers[acc])
+        issue_mma_chain_async(mma_buffers[acc], tma_buffers[s], accumulate = (k > 0))
+        make_free_on_mma_done(tma_buffers[s])    # MMA 消费完这片数据，TMA buffer 就能重新装填
+    make_ready_on_mma_done(mma_buffers[acc])     # num_k 次累加全部完成，可以 drain 了
+
+# ── Epilogue Warps ───────────────────────────────────
+gs = 0
+for tile in my_output_tiles:
+    acc = tile % NUM_ACC
+    wait_until_ready(mma_buffers[acc])
+    for c in range(BN / STORE_N):            # 一次处理 64 列
+        tcgen05_ld_x32_async(mma_buffers[acc], c * STORE_N, ld_buffer, 0)
+        tcgen05_wait_ld()
+        if c == BN / STORE_N - 1:
+            make_free(mma_buffers[acc])  # 最后一段读进寄存器即可释放 MMA buffer
+
+        b = (gs++) % NUM_STORE
+        wait_until_free(store_buffers[b])
+        stage(ld_buffer, store_buffers[b])   # RMEM -> SMEM，同步
+        make_ready(store_buffers[b])
+        tma_store_async(store_buffers[b], C[tile, c])
+        make_free_on_tma_done(store_buffers[b])  # TMA store 写完，这块 SMEM 才能复用
+```
+
+这已经是一个高度重叠的流水线：MMA 操作在对 TMA buffer0 的数据进行 MMA 操作时，与此同时，TMA load 操作也在进行，譬如或许在对 TMA buffer1 进行数据写入；与此同时，tcgen05.ld 和 stage 操作也在进行（这两者统称为 draining），譬如对另一个 MMA buffer 中数据进行 draining；与此同时，TMA store 操作也在进行，譬如对已经 draining 结束的数据进行内存写入。
+
+我们前面提到过的 5 种操作，除了 tcgen05.ld 和 stage 是串行的以外，其他所有操作全部并行了起来，全部处于同时运行的状态。这种串行是设计使然：tcgen05.ld buffer 只有一个，所以下一段数据必须等这一段 stage 完、寄存器空出来以后才能从 TMEM 里读出来。
+
+从伪代码里也能读出这个设计最关键的一处安排：MMA warp 每换一个 output tile 就切换 MMA buffer，而 epilogue 在把最后一段读进寄存器之后就立刻 `make_free(mma_buffers[acc])`。两者合起来的效果是，一个 output tile 的 draining 只要在**下下个** output tile 开始前完成，MMA 就不会卡住。这个时间窗口和 K 的大小有关：K 越大窗口越大，K 越小则越可能造成 WAR 停顿。流水线设计的最终目标就是**最小停顿地吃满 MMA**。
+
+值得注意的是，同样的这一套逻辑也完全能够适配 BK=128 的情况，BK=128 与 BK=64 唯一的区别就是 TMA Buffer 从 6 个变为了 3 个，而逻辑部分完全不变 —— 这里我们把 BK 作为一个选配参数，有两种选择：64 和 128。
+
+#### 性能数字
+
+下面我们看一下这个设计在方阵上的性能是多少，事实上我们考虑两种不同的 BK 选配：64/128，以及三种不同的 GROUP_SIZE_M （简称 GSM，代表 CTA swizzle 的深度）选配:8/12/16。不同的 GSM 选配仅仅需要改一个常数参数，而 BK=64/128 的区别也仅仅在于把 TMA buffer 的数量砍半，逻辑部分完全一致。
+以下性能数字的测量方法使用 triton.do_bench 获得 median runtime，warmup 和 repetition time 都设置为 1 秒；每个尺寸跑三轮独立的测量，每轮内部再做三次打乱顺序的采样，最后取中位数。
+
+![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/perf-bn256.png)
+
+
