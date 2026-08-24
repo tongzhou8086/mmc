@@ -201,7 +201,92 @@ for tile in my_output_tiles:
 ![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/perf-bn256.png)
 
 
+### 第二种设计：BN512 
+BN256 的设计其实已经非常流畅了：TMA buffer 有 6 个，应该能够流畅地将数据加载到 SMEM 中，这样 MMA 总是有操作数可以计算 —— 这一部分针对的是 RAW 停顿；此外 MMA buffer 也有两个，所以如果一个 output tile 的 epilogue 能在下下个 output tile 开始之前完成，WAR 停顿也就被藏了起来。两者合起来，理论上我们就可以持续不停地 issue MMA，这已经是一个非常流畅的设计了。
+
+不过，根据实际性能结果，我们发现，在比较大的方阵上，BN256 的性能停滞在了 1300T 左右。一个可能的原因是，尽管 MMA 的 issue 的确没什么停顿，但是每次只用了一半的 TMEM 做 accumulation 达到的算术强度还是不太够，也就是说，同样的数据量加载进来，它产生的计算量有限。
+
+于是在第二种设计中，我们换一种新的思路，即，把整个 TMEM 作为一个 single MMA buffer 使用，其 BN 是 512，简单的计算我们可以发现，BN=512 下，每个 K tile 的数据量会变为 1.5 倍 —— 从 32KB 变成 48KB，而计算量则会变为两倍，这样会导致同样的数据量进来，能够产生更大的计算量。但是与此同时，只用了一个逻辑上的 MMA buffer 的话，就会导致在 epilogue draining 期间，后续的 MMA 无法进行 issue，需要等待这个 MMA buffer 被腾空以后才能够 issue 后续的 MMA，这就是典型的 WAR 停顿，发生在两个 output tile 交接的时候。算术强度的提高，本质上其实还是减少了 RAW 停顿，相当于可以复用片上的数据，而不是重新从内存或 L2 中加载，即，等待数据的平均时间减少了。但是与此同时换来了更多 WAR 停顿。由于 WAR 停顿发生在外层循环，而 RAW 停顿发生在内层循环，我们有理由相信，对于 k 迭代次数较多的情况，这应该能带来性能提升。
+
+我们再计算一下 TMA buffer 的大小和数量，BM 依然设为 128，BN 现在是 512，BK 先取 64，套用前面的公式：
+
+* A tile: BM × BK × 2 = 128 × 64 × 2 = **16KB**
+* B tile: BK × BN × 2 / 2 = 64 × 512 × 2 / 2 = **32KB**
+
+所以一个 TMA buffer（一个 A tile 加一个 B tile）是 **48KB**，于是我们给 TMA buffer 配 **4 个**，共 192KB；store buffer 依然配 **2 个**，每个是 128 × 64 × 2 = 16KB，共 32KB。两者相加还是 224KB。
+
+代码的调度逻辑如下，主要区别在于此时没有两个 MMA buffer 的互相切换了：
+
+```text
+# ── 参数 ──────────────────────────────────────────────
+NS        = 4              # TMA buffer 个数（BK=128 时为 2）
+NUM_ACC   = 1              # BN=512 占满整个 TMEM，只有一个 MMA buffer
+NUM_STORE = 2
+STORE_N   = 64             # 每次从 TMEM 读出、stage、store 的列数
+num_k     = K / BK
+
+# ── Buffer 配置 ───────────────────────────────────────
+tma_buffers   = [TMA_Buffer(48KB)   for _ in range(NS)]
+mma_buffer    =  MMA_Buffer(256KB)                        # 整块 TMEM，128 x 512
+ld_buffer     =  TCGEN05_LD_Buffer(32KB)
+store_buffers = [Store_Buffer(16KB) for _ in range(NUM_STORE)]
+
+# ── TMA Warp ─────────────────────────────────────────
+gk = 0
+for tile in my_output_tiles:
+    for k in range(num_k):
+        s = (gk++) % NS
+        wait_until_free(tma_buffers[s])
+        tma_load_async(A, tile.m, k * BK, BM,   BK,     tma_buffers[s], 0)
+        tma_load_async(B, k * BK, tile.n, BK,   BN / 2, tma_buffers[s], 16KB)
+        make_ready_on_tma_done(tma_buffers[s])
+
+# ── MMA Warp ─────────────────────────────────────────
+gk = 0
+for tile in my_output_tiles:
+    for k in range(num_k):
+        s = (gk++) % NS
+        wait_until_ready(tma_buffers[s])
+        if k == 0:
+            wait_until_free(mma_buffer)   # 只有一个 accumulator：必须等上个 tile 彻底 drain 完
+        issue_mma_chain_async(mma_buffer, tma_buffers[s], accumulate = (k > 0))
+        make_free_on_mma_done(tma_buffers[s])
+    make_ready_on_mma_done(mma_buffer)
+
+# ── Epilogue Warps ───────────────────────────────────
+gs = 0
+for tile in my_output_tiles:
+    wait_until_ready(mma_buffer)
+    for c in range(BN / STORE_N):            # 一次处理 64 列，一共 8 段
+        tcgen05_ld_x32_async(mma_buffer, c * STORE_N, ld_buffer, 0)
+        tcgen05_wait_ld()
+        if c == BN / STORE_N - 1:
+            make_free(mma_buffer)        # 最后一段读完即可释放，让下一个 tile 的 MMA 尽早开始
+
+        b = (gs++) % NUM_STORE
+        wait_until_free(store_buffers[b])
+        stage(ld_buffer, store_buffers[b])
+        make_ready(store_buffers[b])
+        tma_store_async(store_buffers[b], C[tile, c])
+        make_free_on_tma_done(store_buffers[b])
+```
+
+和 BN256 版本对比，结构上其实只差了一处：`wait_until_free` 前面没有了 `acc = tile % NUM_ACC` 这一层轮转。只有一个 accumulator，所以下一个 output tile 的第一次 MMA 必须等到当前 tile 完全 drain 完才能发出，这就是前面说的多出来的 WAR 停顿。epilogue 本身则和 BN256 完全一样，仍然是 8 个 64 列的 chunk 依次读出、stage、store。
+
+#### 性能数字
+
+BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果 BK=64 和 128 分别使用 4 个和 2 个 TMA buffer。性能测量方法与上面相同。
+
+![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/perf-bn512.png)
+
+
+几点观察：
+
+* 相比 BN256，BN512 在稍大一些的方阵上确实能达到高得多的性能 —— 稳定飚在了 1450T 左右。一个可能的解释是，方阵越大 K 维度也越大，Epilogue 所占的时间比例便相应缩小 —— BN512 让计算部分更快，代价是 Epilogue 带来的 WAR 停顿更难藏，所以正适合 K 比较大的情况。
+* GSM 在这里的作用比 BN256 明显得多：BK=128 在 20480 上从 GSM=8 的 1423 涨到 GSM=16 的 1468；BK=64 在 17408 上从 1316 涨到 1412。
+* 最好的一档（BK=128 + GSM=16）在 18 个尺寸中有 10 个跑赢了 cuBLAS。
+
 ### 结语
-我们这个优化系列的第一篇就写到这里，这是这个系列的第一篇，我们介绍了主旨思想，即从流水线编排的视角来看待矩阵乘法的设计与实现，以及呈现了一个流水线的理论框架。我们也给出了第一种流水线编排设计，尽管性能数字尚未跑赢 CUBLAS，但是它已经为我们后续的设计奠定了一个坚实的基础。Stay tuned for the next article！
+我们这个优化系列的第一篇就写到这里，这是这个系列的第一篇，我们介绍了主旨思想，即从流水线编排的视角来看待矩阵乘法的设计与实现，以及呈现了一个流水线的理论框架。我们也给出了两种流水线编排设计，已经在 18 个尺寸中有 10 个跑赢了 cuBLAS。在后续的系列中，我们还会继续优化之旅，stay tuned！
 
 
