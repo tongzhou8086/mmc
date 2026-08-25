@@ -125,7 +125,7 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 * 配 4 个或者 8 个 warps 进行同步的 tcgen05.ld 和 stage，这些 warps 也被称为 epilogue warps
 * TMA Store 操作比较简单，也顺便由上面的 epilogue warps 完成异步指令 issue，减少 warp 调度
 
-### 第一种设计：BN256
+### 实现一：用一半 TMEM，达 1300T 
 现在我们介绍第一种流水线编排设计。尽管相对基础，它已经使用多个 TMA buffer 来减少 RAW 停顿，以及使用两个 MMA buffer 来减少 WAR 停顿，其 BM 配置为 128，BN 配为 256，BK 则有 64 和 128 两种不同的选配。以 BK 为 64 为例，我们可以计算出一个 A tile 和 B tile 占用的空间分别是 16KB 和 32KB，由于 2 CTA MMA 的开启，一个 CTA 实际需要加载的数据量是 16 + 32/2 = 32KB，也就是一个 TMA buffer 的大小。而一个 store buffer 的大小是 16KB。这里，我们的思路是把 TMA buffer 配置多一点，来加深数据预取流水线深度，而 store buffer 仅仅只配两个。这样占用的 SMEM 空间正好是  `32*6 + 16*2 = 224KB`，刚好在 227KB 的容量范围内。
 
 tcgen05.ld buffer 的话，我们遵循默认配置，大小为 128 行 x 64 列，即每次从 MMA buffer 中读取 64 列数据。这里我们没有配置多个 tcgen05.ld buffer，而是让 epilogue warps 串行地进行 tcgen05.ld 和 stage 操作。确定了参数配置，我们再来看流水线的调度逻辑，这里我们使用一套[调度原语](https://github.com/tongzhou8086/mmc/blob/main/docs/pipeline-primitives.md)来表达：
@@ -202,7 +202,7 @@ for tile in my_output_tiles:
 ![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/perf-bn256.png)
 
 
-### 第二种设计：BN512 
+### 实现二：用满 TMEM，达 1450T
 BN256 的设计其实已经非常流畅了：TMA buffer 有 6 个，应该能够流畅地将数据加载到 SMEM 中，这样 MMA 总是有操作数可以计算 —— 这一部分针对的是 RAW 停顿；此外 MMA buffer 也有两个，所以如果一个 output tile 的 epilogue 能在下下个 output tile 开始之前完成，WAR 停顿也就被藏了起来。两者合起来，理论上我们就可以持续不停地 issue MMA，这已经是一个非常流畅的设计了。
 
 不过，根据实际性能结果，我们发现，在比较大的方阵上，BN256 的性能停滞在了 1300T 左右。一个可能的原因是，尽管 MMA 的 issue 的确没什么停顿，但是每次只用了一半的 TMEM 做 accumulation 达到的算术强度还是不太够，也就是说，同样的数据量加载进来，它产生的计算量有限。
