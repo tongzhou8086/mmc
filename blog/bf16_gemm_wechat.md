@@ -120,23 +120,20 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 它们的大小将决定了 SMEM 中能放置几个 TMA buffer，以及 TMA buffer 和 Store buffer 分别应该配置多少个？与此同时，由于 2 CTA MMA 的开启，对于 B tile，一个 cluster 中的两个 CTA 分别只需要加载 B tile 的一半即可，另一半 B tile 数据可以直接从隔壁 SM 读取，由此也可以看出 2 CTA MMA巨大的功效：除了提高算术强度以外，它还能将每个 CTA 从内存中读取的 B Tile 大小砍半，从而腾出更多的 SMEM 空间来做成 TMA buffer 或者 Store buffer。
 
 
-我们再来计算上述的各类容器的大小，MMA buffer 的大小计算最简单，因为它是 accumulator，所以它的大小一定就是 BMxBN；TMA buffer 的大小取决于 A tile 和 B tile 分别的大小，即 BMxBK 和 BKxBN；tcgen05.ld buffer 我们会默认配置为 128x64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，即使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128x64，与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
+我们再来计算上述的各类容器的大小，MMA buffer 的大小计算最简单，因为它是 accumulator，所以它的大小一定就是 BMxBN；TMA buffer 的大小取决于 A tile 和 B tile 分别的大小，即 BMxBK 和 BKxBN；tcgen05.ld buffer 我们会默认配置为 128x64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，即使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128x64， 即 16KB。与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
 
+### Warp 的配置
+因为我们的 5 种流水线操作需要能够并行起来，于是我们会给不同的 Warp 分配不同的角色，这也称为 Warp Specialization。对于本文所探讨的设计方案而言，均采用如下配置：
 
-《注明：这里相当于是在介绍所有的流水线设计之前，我们先介绍各类容器大小的计算方式，相当于是一个共有的头文件，之后的所有设计都可以用同样的方式来计算，以及 BK 的配置等等。我的这条注明不需要任何的内容的补全，就仅仅只是解释一下这里的写作的上下文。》
+* 配一个 Warp 进行异步的 TMA load issue，又称 TMA Warp
+* 配一个 Warp 进行异步的 MMA issue，又称 MMA Warp
+* 配 4 个或者 8 个 warps 进行同步的 tcgen05.ld 和 stage，这些 warps 也被称为 epilogue warps
+* TMA Store 操作比较简单，也顺便由上面的 epilogue warps 完成异步指令 issue，减少 warp 调度
 
 ### 第一种设计：BN256
-现在我们介绍第一种流水线编排设计。尽管相对基础，它已经使用多个 TMA buffer 来减少 RAW 停顿，以及使用两个 MMA buffer 来减少 WAR 停顿。任何一种流水线设计，我们都需要首先确定 BM、BN、BK 如何配置，由此便能计算各种 buffer 的大小，然后便能计算每一种 buffer 可以配置几个。我们先看 BM 和 BN 的配置。
-由于 MMA buffer 的物理存储介质是 TMEM（128行 x 512列），BM 实际上由于硬件限制被固定为 128，与此同时，为了配置两个 MMA buffer 来减少上述的 WAR 停顿，我们将 BN 配置为 512/2 = 256。我们再看 BK 的配置，由于 BK 是 A tile 的 inner dimension，所以考虑到一些内存访问的连续性，我们会将 BK 配置为 64 的倍数，因为在 BF16 数据类型的情况下，BK 等于 64 的倍数，便能得到 128 个连续字节的内存访问模式，不会浪费任何内存带宽。这样我们便能得出逻辑上 A tile 和 B tile 的大小（字节数）分别为：
+现在我们介绍第一种流水线编排设计。尽管相对基础，它已经使用多个 TMA buffer 来减少 RAW 停顿，以及使用两个 MMA buffer 来减少 WAR 停顿，其 BM 配置为 128，BN 配为 256，BK 则有 64 和 128 两种不同的选配。以 BK 为 64 为例，我们可以计算出一个 A tile 和 B tile 占用的空间分别是 16KB 和 32KB，由于 2 CTA MMA 的开启，一个 CTA 实际需要加载的数据量是 16 + 32/2 = 32KB，也就是一个 TMA buffer 的大小。而一个 store buffer 的大小是 16KB。这里，我们的思路是把 TMA buffer 配置多一点，来加深数据预取流水线深度，而 store buffer 仅仅只配两个。这样占用的 SMEM 空间正好是  `32*6 + 16*2 = 224KB`，刚好在 227KB 的容量范围内。
 
-* A tile：128 * 64 * 2
-* B tile：64 * 256 * 2
-
-与此同时，由于 2 CTA MMA 的开启，对于 B tile，一个 cluster 中的两个 CTA 分别只需要加载 B tile 的一半即可，另一半 B tile 数据可以直接从隔壁 SM 读取，这样便使得这个 Tile Sizes 的配置下，一个 A Tile 和 B tile 占用的空间分别是 16KB，一共便是 32KB，也就是一个 TMA buffer 的大小。而一个 store buffer 的大小是 16KB。这里，我们选择配置 6 个 TMA buffer，加上 2 个 store buffer，这样占用的 SMEM 空间正好是  `32*6 + 16*2 = 224KB`，刚好在 227KB 的容量范围内。
-
-tcgen05.ld buffer 的话，我们总是只会配置一个，大小为 128 行 x 64 列，即每次从 MMA buffer 中读取 64 列数据。这里我们没有配置多个 tcgen05.ld buffer，而是让 epilogue warps 串行地进行 tcgen05.ld 和 stage 操作。
-
-确定了参数配置，我们再来看流水线的调度逻辑，这里我们使用上面这套原语来表达：
+tcgen05.ld buffer 的话，我们遵循默认配置，大小为 128 行 x 64 列，即每次从 MMA buffer 中读取 64 列数据。这里我们没有配置多个 tcgen05.ld buffer，而是让 epilogue warps 串行地进行 tcgen05.ld 和 stage 操作。确定了参数配置，我们再来看流水线的调度逻辑，这里我们使用一套[调度原语](https://github.com/tongzhou8086/mmc/blob/main/docs/pipeline-primitives.md)来表达：
 
 ```text
 # ── 参数 ──────────────────────────────────────────────
