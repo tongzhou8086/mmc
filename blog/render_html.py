@@ -11,8 +11,8 @@ MathJax for the one display equation - if it cannot be reached the equation
 degrades to readable TeX rather than breaking the page.
 
 Only the Markdown subset the post actually uses is supported: headings, bullet
-lists, fenced code, images, links, bold, inline code, $$-delimited display math,
-and pass-through of raw HTML lines. Deliberately not a general converter - it is
+lists, blockquotes, fenced code, images, links, bold, inline code, $$-delimited
+display math, and pass-through of raw HTML lines. Deliberately not a general converter - it is
 here so that the post has exactly one rendering path we control.
 """
 
@@ -97,6 +97,11 @@ pre {
 }
 pre code { background: none; padding: 0; font-size: .82rem; line-height: 1.7; }
 img { display: block; max-width: 100%; height: auto; margin: 1.5rem auto; }
+blockquote {
+  margin: 1.6rem 0; padding: .35rem 0 .35rem 1.1rem;
+  border-left: 3px solid var(--rule); color: #52606d;
+}
+blockquote p { margin: 0; }
 figure { margin: 2rem 0; }
 figcaption { text-align: center; font-size: .85rem; color: #6b7684; }
 .math { overflow-x: auto; margin: 1.5rem 0; text-align: center; }
@@ -112,6 +117,7 @@ figcaption { text-align: center; font-size: .85rem; color: #6b7684; }
   a { color: #7cb0e0; }
   code { background: #23282e; }
   pre { background: #1b1f24; border-color: #2c3238; }
+  blockquote { color: #a8b1bb; }
   img { background: #fff; border-radius: 4px; }
   figcaption { color: #99a2ad; }
 }
@@ -220,6 +226,16 @@ def convert(md, inlined, toc):
             i += 1
             continue
 
+        if stripped.startswith(">"):
+            quote = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                quote.append(re.sub(r"^>\s?", "", lines[i].strip()))
+                i += 1
+            text = _resolve_links(" ".join(quote), inlined)
+            body.append("<blockquote><p>" + inline_md(text)
+                        + "</p></blockquote>")
+            continue
+
         if re.match(r"[*-]\s+", stripped):
             items = []
             while i < len(lines) and re.match(r"[*-]\s+", lines[i].strip()):
@@ -236,7 +252,8 @@ def convert(md, inlined, toc):
 
         para = []
         while i < len(lines) and lines[i].strip() \
-                and not lines[i].strip().startswith(("```", "#", "<", "$$")) \
+                and not lines[i].strip().startswith(("```", "#", "<", "$$",
+                                                      ">")) \
                 and not re.match(r"[*-]\s+", lines[i].strip()):
             para.append(lines[i].strip())
             i += 1
