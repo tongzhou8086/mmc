@@ -270,7 +270,7 @@ for tile in my_output_tiles:
         make_free_on_tma_done(store_buffers[b])
 ```
 
-和 BN256 版本对比，结构上其实只差了一处：`wait_until_free` 前面没有了 `acc = tile % NUM_ACC` 这一层轮转。只有一个 accumulator，所以下一个 output tile 的第一次 MMA 必须等到当前 tile 完全 drain 完才能发出，这就是前面说的多出来的 WAR 停顿。epilogue 本身则和 BN256 完全一样，仍然是 8 个 64 列的 chunk 依次读出、stage、store。
+和 BN256 版本对比，结构上其实只差了一处：`wait_until_free` 前面没有了 `acc = tile % NUM_ACC` 这一层轮转。只有一个 accumulator，所以下一个 output tile 的第一次 MMA 必须等到当前 tile 完全 drain 完才能发出，这就是前面说的多出来的 WAR 停顿。epilogue 的结构则和 BN256 一致，仍然是按 64 列一段依次读出、stage、store，只是 BN 翻倍之后每个 output tile 从 4 段变成了 8 段。
 
 #### 性能数字
 
