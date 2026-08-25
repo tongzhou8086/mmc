@@ -112,7 +112,16 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 ## 实现篇
 
 ### 各类容器大小的计算方式
-流水线设计的第一步便是计算上述的各类容器的大小，TMA buffer 和 MMA buffer 的大小取决于 BM、BN、BK 的配置 《请帮我完成这些 Tile Sizes 以及 Buffer Sizes 的大小的计算写作，以及解释一下 BK 为什么要设成 64 的倍数，我们写完以后就可以把下面“第一种设计：BN256”一章中重复的内容便可以删掉》，tcgen05.ld buffer 我们会默认配置为 128x64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining，我们会扩大 tcgen05.ld buffer，即使用尽可能多的寄存器空间用作 tcgen05.ld buffer。Store buffer 的大小我们也默认为 128x64，与 BK 设为 64 的倍数的原因类似，这里凑满 64 列，便能保证 Coalesced Memory Write。
+首先我们看一下，由于 Blackwell 硬件限制导致的 BM、BN、BK 的取值范围。Blackwell 的 TMEM 的组织方式是 128 行乘 512 列，并且单次 MMA 指令也限制了 BM 必须为 128，对应 TMEM 的行数，而单次的 MMA 支持至多 N=64/128/256。当我们配置 BN 为 256 时，一个 MMA buffer 的大小为 128 行 x 256 列 —— 整个 TMEM 中可以放两个这样的 buffer。BK 的选值和内存访问的连续性有关，由于 BK 是 A tile 的 inner dimension，所以考虑到一些内存访问的连续性，我们会将 BK 配置为 64 的倍数，因为在 BF16 数据类型的情况下，BK 等于 64 的倍数，便能得到 128 个连续字节的内存访问模式，不会浪费任何内存带宽。所以一个 A Tile 和 B tile 分别的字节数的计算方式如下：
+
+* A tile：BM * BK * 2
+* B tile：BK * BN * 2
+
+它们的大小将决定了 SMEM 中能放置几个 TMA buffer，以及 TMA buffer 和 Store buffer 分别应该配置多少个？与此同时，由于 2 CTA MMA 的开启，对于 B tile，一个 cluster 中的两个 CTA 分别只需要加载 B tile 的一半即可，另一半 B tile 数据可以直接从隔壁 SM 读取，由此也可以看出 2 CTA MMA巨大的功效：除了提高算术强度以外，它还能将每个 CTA 从内存中读取的 B Tile 大小砍半，从而腾出更多的 SMEM 空间来做成 TMA buffer 或者 Store buffer。
+
+
+我们再来计算上述的各类容器的大小，MMA buffer 的大小计算最简单，因为它是 accumulator，所以它的大小一定就是 BMxBN；TMA buffer 的大小取决于 A tile 和 B tile 分别的大小，即 BMxBK 和 BKxBN；tcgen05.ld buffer 我们会默认配置为 128x64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，即使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128x64，与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
+
 
 《注明：这里相当于是在介绍所有的流水线设计之前，我们先介绍各类容器大小的计算方式，相当于是一个共有的头文件，之后的所有设计都可以用同样的方式来计算，以及 BK 的配置等等。我的这条注明不需要任何的内容的补全，就仅仅只是解释一下这里的写作的上下文。》
 
