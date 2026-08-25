@@ -1,6 +1,9 @@
-"""Render blog/post1.md to a single self-contained HTML page.
+"""Render one of the blog posts to a single self-contained HTML page.
 
-    python blog/render_html.py [out.html]
+    python blog/render_html.py [out.html] [source.md]
+
+The source defaults to blog/bf16_gemm.md; pass a path to render a different
+post (the series is split across several files).
 
 The page inlines its CSS and every figure (as a data: URI), so it can be served
 from anywhere without the repo alongside it. The only external request left is
@@ -20,9 +23,8 @@ import re
 import sys
 from pathlib import Path
 
-POST = Path(__file__).with_name("post1.md")
+DEFAULT_POST = Path(__file__).with_name("bf16_gemm.md")
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = Path(__file__).with_name("post1.html")
 
 # figures live under raw.githubusercontent.com/<owner>/<repo>/main/<path>; the
 # <path> half also names the file in this checkout, so we can inline the bytes
@@ -292,8 +294,10 @@ document.addEventListener("DOMContentLoaded", function () {
 
 
 def main():
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUT
-    md = POST.read_text()
+    post = Path(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_POST
+    out = (Path(sys.argv[1]) if len(sys.argv) > 1
+           else post.with_suffix(".html"))
+    md = post.read_text()
     title = re.match(r"#\s+(.*)", md.split("\n")[0]).group(1)
     inlined, toc = [], []
     body = convert(md, inlined, toc)

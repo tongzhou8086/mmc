@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Render blog/post1.md to a self-contained HTML page and (re)upload it to
-# hibe.dev. Re-running updates the same project (same name), so the public share
-# URL stays stable.
+# Render one of the blog posts to a self-contained HTML page and (re)upload it
+# to hibe.dev. Re-running with the same HIBE_NAME updates that project in place,
+# so its public share URL stays stable; a new name mints a new URL.
 #
-#   ./blog/upload_to_hibe.sh              # name "gemm-blackwell-post"
-#   HIBE_NAME=my-draft ./blog/upload_to_hibe.sh
+#   ./blog/upload_to_hibe.sh                              # bf16_gemm.md
+#   HIBE_SRC=blog/bf16_gemm_wechat.md HIBE_NAME=my-draft ./blog/upload_to_hibe.sh
 #
 # Prereq: a hibe token at ~/.config/hibe/token. To mint one (device flow):
 #   curl -s -X POST https://hibe.dev/api/auth/device           # note user_code + device_code
@@ -17,6 +17,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAME="${HIBE_NAME:-gemm-blackwell-post}"
+SRC="${HIBE_SRC:-$HERE/bf16_gemm.md}"
 HTML="$(mktemp -d)/index.html"
 TOKEN_FILE="${HIBE_TOKEN_FILE:-$HOME/.config/hibe/token}"
 
@@ -24,7 +25,8 @@ TOK="$(tr -d '[:space:]' < "$TOKEN_FILE" 2>/dev/null || true)"
 [ -n "$TOK" ] || { echo "ERROR: empty/missing token at $TOKEN_FILE (see device-flow notes at top)." >&2; exit 1; }
 
 # 1. Render the post, inlining every local figure as a data: URI.
-python3 "$HERE/render_html.py" "$HTML"
+[ -f "$SRC" ] || { echo "ERROR: no such source: $SRC" >&2; exit 1; }
+python3 "$HERE/render_html.py" "$HTML" "$SRC"
 
 # 2. Create the project, or (if the name already exists) update it in place via a
 #    tarball PUT -- which preserves the share URL. Look up any existing id by name:
