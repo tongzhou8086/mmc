@@ -2,9 +2,7 @@
 
 这个系列的文章中，以我们在 B200 上优化矩阵乘法的经历为基础，讲一个以“流水线编排”为核心的故事，一种从“算法设计”的视角来看待矩阵乘法 kernel 的编写。除流水线编排之外，我们只使用两种必备的常规优化 —— 2-CTA MMA 与 CTA swizzling —— 便能在 4096 及以上的方阵上接近乃至超越 cuBLAS。事实上，本系列中介绍的第四版设计在 18 个尺寸的方阵下，有 12 个都跑赢了 cuBLAS，steady-state 性能最高可达 1450T 以上。
 
-希望读完之后你能感受到：在补齐必要的 GPU 架构背景之后，高性能矩阵乘法算子的设计，实质上可以被建模成一个妙趣横生的算法设计问题。
-
-## 背景篇
+## 背景
 
 ### 分块矩阵乘法与算术强度
 矩阵乘法的计算模式，天然适合于“分块”（Tiling）这样一种优化方式，即每次加载一小块输入到片上，也只计算一小块输出。这样的好处是提高数据局部性，充分使用每一小块的数据进行计算，减少对于全局内存的冗余访问。这里我们假定读者已对数据局部性、分块等基础背景具有相当的了解，便不再赘述其[基本原理](https://zhuanlan.zhihu.com/p/292539074)，直接探讨分块的大小如何影响流水线的编排。
@@ -24,7 +22,7 @@ Blackwell 架构将这种单线程发出指令、专用硬件背后完成异步�
 
 这种高度异步化的架构设计的结果就是，软件更多成为了一个调度者的角色，调度 TMA 指令和 MMA 指令什么时候、以何种顺序发射，以及何时进行同步的 epilogue 等等。除了指令的交织与调度，还有一种资源，便是片上的存储资源，即 SMEM 和寄存器如何进行分配？划分出多少用于辅助 TMA、MMA 或者是 epilogue？本文正是从流水线指令与资源调度这样一个视角来展开全文。鉴于篇幅限制，这里我们仅借做一个概述，更多的关于 Blackwell 的硬件特性请参考[Blackwell 架构背景篇]，硬件架构特性实际上会成为流水线设计的 constraints。
 
-## 理论篇
+## 理论
 
 ### GEMM kernel 的宏观框架
 在介绍流水线的资源调度之前，我们先看一下 GEMM kernel 代码的整体框架，以便对数据的生产与消费流程有一个宏观的认知。首先大小为 M x N 的输出矩阵被以 BMxBN 的块大小划分成 M/BM x N/BN 块，每一块就是一个独立的计算任务（output tile）。计算任何的 BM x BN 一小块都需要在 K 维度进行迭代，即每次处理 BK，分 K/BK 步进行。与此同时，由于同一个 CTA 会处理多个 BM x BN 的块（即 persistent kernel，一个 CTA 会常驻在一个 SM 上），于是还会存在一个外层循环，来对不同的块进行迭代。两者循环嵌套起来，便可以得到如下的代码框架：
@@ -98,13 +96,13 @@ RAW 停顿来源于 read-after-write 数据依赖，减少停顿的方法则是�
 
 ### 解决 WAR 停顿
 
-WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的依赖，在编译原理以及计算机体系结构中的标准解决方案就是让 write 写入一个新的 buffer，在计算机体系结构中，这个被称为 register renaming。于是这里我们通过增加一个 MMA buffer，便能够使得 MMA 操作和 tcgen05.ld 操作重叠起来 —— 各自操作不同的 MMA buffer，如下图所示：
+WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的依赖，在编译原理以及计算机体系结构中的标准解决方案就是让 write 写入一个新的 buffer。于是这里我们通过增加一个 MMA buffer，便能够使得 MMA 操作和 tcgen05.ld 操作重叠起来 —— 各自操作不同的 MMA buffer，如下图所示：
 
 ![两份 TMA buffer 加两份 MMA buffer 下的流水线时序](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-accumulator-timeline.png)
 
 这下 MMA 那一行从头到尾连成了一片，再没有空档 —— 而 MMA 能持续 issue，正是整个流水线编排追求的目标。
 
-## 实现篇
+## 实现
 
 ### 各类容器大小的计算方式
 首先我们看一下，由于 Blackwell 硬件限制导致的 BM、BN、BK 的取值范围。Blackwell 的 TMEM 的组织方式是 128 行乘 512 列，并且单次 MMA 指令也限制了 BM 必须为 128，对应 TMEM 的行数，而单次的 MMA 支持至多 N=64/128/256。当我们配置 BN 为 256 时，一个 MMA buffer 的大小为 128 行 x 256 列 —— 整个 TMEM 中可以放两个这样的 buffer。BK 的选值和内存访问的连续性有关，由于 BK 是 A tile 的 inner dimension，所以考虑到一些内存访问的连续性，我们会将 BK 配置为 64 的倍数，因为在 BF16 数据类型的情况下，BK 等于 64 的倍数，便能得到 128 个连续字节的内存访问模式，不会浪费任何内存带宽。所以一个 A Tile 和 B tile 分别的字节数的计算方式如下：
@@ -112,8 +110,7 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 * A tile：BM * BK * 2
 * B tile：BK * BN * 2
 
-它们的大小将决定了 SMEM 中能放置几个 TMA buffer，以及 TMA buffer 和 Store buffer 分别应该配置多少个？与此同时，由于 2 CTA MMA 的开启，对于 B tile，一个 cluster 中的两个 CTA 分别只需要加载 B tile 的一半即可，另一半 B tile 数据可以直接从隔壁 SM 读取，由此也可以看出 2 CTA MMA巨大的功效：除了提高算术强度以外，它还能将每个 CTA 从内存中读取的 B Tile 大小砍半，从而腾出更多的 SMEM 空间来做成 TMA buffer 或者 Store buffer。
-
+它们的大小将决定了 SMEM 中能放置几个 TMA buffer，以及 TMA buffer 和 Store buffer 分别应该配置多少个？与此同时，由于 2 CTA MMA 的开启，对于 B tile，一个 cluster 中的两个 CTA 分别只需要加载 B tile 的一半即可，另一半 B tile 数据可以直接从隔壁 SM 读取，由此也可以看出 2 CTA MMA 的双重收益：即能提高算术强度（保持计算量不变的情况下，减少内存数据的加载），又能缩小 TMA buffer 的大小从而腾出更多的 SMEM 空间。
 
 我们再来计算上述的各类容器的大小，MMA buffer 的大小计算最简单，因为它是 accumulator，所以它的大小一定就是 BMxBN；TMA buffer 的大小取决于 A tile 和 B tile 分别的大小，即 BMxBK 和 BKxBN；tcgen05.ld buffer 我们会默认配置为 128x64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，即使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128x64， 即 16KB。与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
 
