@@ -119,7 +119,7 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 * 内存访问粒度：对内存的读写最好以 128 个连续字节为单位，这既约束了 BK 的取值（读取内存时的连续），也约束了 store buffer 的列数（写入内存时的连续）
 * 2-CTA MMA：一个 cluster 中的两个 CTA 各自只需加载半个 B tile，另一半 B tile 数据可以直接从隔壁 SM 读取，于是 TMA buffer 里 B 的那一半也随之减半
 
-由这几条可以直接推出 tile sizes 的取值范围。BM 没有选择，只能是 128。BN 最大为 512，因为 TMEM 一行只有 512 个 fp32；当 BN 配为 256 时，一个 MMA buffer 是 128 行 x 256 列，整个 TMEM 正好放得下两个。BK 则不由容量决定，而是由内存访问的连续性决定：BK 是 A tile 的 inner dimension，在 BF16 下把 BK 配成 64 的倍数，一次访问正好凑满 128 个连续字节，不浪费任何内存带宽。实际应用中一个常见的配置方案就是 BM=128，BN=256，BK=64 或 128。
+由这几条可以直接推出 tile sizes 的取值范围。BM 没有选择，只能是 128。BN 最大为 512，因为 TMEM 一行只有 512 个 fp32；当 BN 配为 256 时，一个 MMA buffer 是 128 行 x 256 列，整个 TMEM 正好放得下两个。BK 则不由容量决定，而是由内存访问的连续性决定：BK 是 A tile 的 inner dimension，在 BF16 下把 BK 配成 64 的倍数，一次访问正好凑满 128 个连续字节，不浪费任何内存带宽。
 
 按上述取值范围，一个 A tile 和 B tile 分别的字节数的计算方式则分别是 BM * BK * 2 以及 BK * BN * 2。它们的大小将决定了 SMEM 中能放置几个 TMA buffer，以及 TMA buffer 和 Store buffer 分别应该配置多少个。与此同时，由于 2 CTA MMA 的开启，每个 CTA 实际需要读取的 B tiles 的字节数减半，变为 BK * BN。由此也可以看出 2 CTA MMA 的双重收益：即能提高算术强度（保持计算量不变的情况下，减少内存数据的加载），又能缩小 TMA buffer 的大小从而腾出更多的 SMEM 空间。
 
@@ -134,29 +134,16 @@ tcgen05.ld buffer 我们会默认配置为 128 x 64，即能装下 TMEM 数据�
 * TMA Store 操作比较简单，也顺便由上面的 epilogue warps 完成异步指令 issue，减少 warp 调度
 
 ### 设计一：双 buffer BN256
-现在我们介绍第一种流水线编排设计。尽管相对基础，它已经使用多个 TMA buffer 来减少 RAW 停顿，以及使用两个 MMA buffer 来减少 WAR 停顿，其 BM 配置为 128，BN 配为 256，BK 则有 64 和 128 两种不同的选配。以 BK 为 64 为例，我们可以计算出一个 A tile 和 B tile 占用的空间分别是 16KB 和 32KB，由于 2 CTA MMA 的开启，一个 CTA 实际需要加载的数据量是 16 + 32/2 = 32KB，也就是一个 TMA buffer 的大小。而一个 store buffer 的大小是 16KB。这里，我们的思路是把 TMA buffer 配置多一点，来加深数据预取流水线深度，而 store buffer 仅仅只配两个。这样占用的 SMEM 空间正好是  `32*6 + 16*2 = 224KB`，刚好在 227KB 的容量范围内。
+现在我们介绍第一种流水线编排设计。尽管相对基础，它已经使用多个 TMA buffer 来减少 RAW 停顿，以及使用两个 MMA buffer 来减少 WAR 停顿，其 BM 配置为 128，BN 配为 256，BK 则有 64 和 128 两种不同的选配。以 BK 为 64 为例，我们可以计算出一个 A tile 和 B tile 占用的空间分别是 16KB 和 32KB，而由于 2 CTA MMA 的开启，一个 CTA 实际需要加载的数据量是 16 + 32/2 = 32KB，也就是一个 TMA buffer 的大小。而一个 store buffer 的大小是 16KB。这里，我们的思路是把 TMA buffer 配置多一点，6 个，来加深数据预取流水线深度，而 store buffer 仅仅只配两个。这样占用的 SMEM 空间正好是  `32*6 + 16*2 = 224KB`，刚好在 227KB 的容量范围内。
 
-tcgen05.ld buffer 的话，我们遵循默认配置，大小为 128 行 x 64 列，即每次从 MMA buffer 中读取 64 列数据。这里我们没有配置多个 tcgen05.ld buffer，而是让 epilogue warps 串行地进行 tcgen05.ld 和 stage 操作。确定了参数配置，我们再来看流水线的调度逻辑，这里我们使用一套[调度原语](https://github.com/tongzhou8086/mmc/blob/main/docs/pipeline-primitives.md)来表达：
+tcgen05.ld buffer 的话，我们遵循默认配置，大小为 128 行 x 64 列，即每次从 MMA buffer 中读取 64 列数据。确定了参数配置，我们来看 TMA warp、MMA warp 的调度逻辑，这里我们使用一套[调度原语](https://github.com/tongzhou8086/mmc/blob/main/docs/pipeline-primitives.md)来表达：
 
 ```text
-# ── 参数 ──────────────────────────────────────────────
-NS        = 6              # TMA buffer 个数
-NUM_ACC   = 2              # MMA buffer 个数（BN=256，TMEM 刚好放得下两个）
-NUM_STORE = 2              # store buffer 个数
-STORE_N   = 64             # 每次 TMA store 的列数
-num_k     = ceil(K / BK)   # 每个 output tile 需要的 k 迭代次数
-
-# ── Buffer 配置 ───────────────────────────────────────
-tma_buffers   = [TMA_Buffer(32KB)        for _ in range(NS)]
-mma_buffers   = [MMA_Buffer(128KB)       for _ in range(NUM_ACC)]
-ld_buffer     =  TCGEN05_LD_Buffer(32KB)
-store_buffers = [Store_Buffer(16KB)      for _ in range(NUM_STORE)]
-
 # ── TMA Warp ─────────────────────────────────────────
 gk = 0
 for tile in my_output_tiles:                 # 持久化 kernel：每个 CTA 处理若干 output tile
     for k in range(num_k):
-        s = (gk++) % NS                      # 在 NS 个 buffer 上轮转
+        s = (gk++) % 6                       # 在 6 个 TMA buffer 上轮转
         wait_until_free(tma_buffers[s])
         tma_load_async(A, tile.m, k * BK, BM,     BK,       tma_buffers[s], 0)
         tma_load_async(B, k * BK, tile.n, BK,     BN / 2,   tma_buffers[s], 16KB)
@@ -167,13 +154,17 @@ gk = 0
 for tile in my_output_tiles:
     acc = tile % NUM_ACC                     # 每换一个 output tile 就换一个 MMA buffer
     for k in range(num_k):
-        s = (gk++) % NS
+        s = (gk++) % 6
         wait_until_ready(tma_buffers[s])
         if k == 0:
             wait_until_free(mma_buffers[acc])
         issue_mma_chain_async(mma_buffers[acc], tma_buffers[s], accumulate = (k > 0))
         make_free_on_mma_done(tma_buffers[s])    # MMA 消费完这片数据，TMA buffer 就能重新装填
     make_ready_on_mma_done(mma_buffers[acc])     # num_k 次累加全部完成，可以 drain 了
+```
+可以看出这里 TMA warps 和 MMA warps 都有两层循环，外层循环对应不同的 output Tiles，而内存循环对应同一个 Output Tiles 不同的 K tile 迭代。然后二者都使用一个全局的计数器`gk`在 6 个 TMA buffer 上轮转。对于 TMA Warp 而言，它每次先等待对应的 TMA buffer 变为“可写”状态，之后发出加载数据的指令`tma_load_async`，以及一个异步的信号注册`make_ready_on_tma_done`，即，当数据加载到位以后，自动翻转 buffer 状态为“可读”。同样的，对于 MMA Warp 而言，它每次也是先等待对应的 TMA buffer 变为可读状态，之后便 issue MMA 指令，然后注册一个异步的信号`make_free_on_mma_done`，即，当对应的 TMA buffer 中的数据被消费完以后自动翻转其状态为可写。
+
+```
 
 # ── Epilogue Warps ───────────────────────────────────
 gs = 0
