@@ -121,9 +121,9 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 
 由这几条可以直接推出 tile sizes 的取值范围。BM 没有选择，只能是 128。BN 最大为 512，因为 TMEM 一行只有 512 个 fp32；当 BN 配为 256 时，一个 MMA buffer 是 128 行 x 256 列，整个 TMEM 正好放得下两个。BK 则不由容量决定，而是由内存访问的连续性决定：BK 是 A tile 的 inner dimension，在 BF16 下把 BK 配成 64 的倍数，一次访问正好凑满 128 个连续字节，不浪费任何内存带宽。实际应用中一个常见的配置方案就是 BM=128，BN=256，BK=64 或 128。
 
-按上述取值范围，一个 A tile 和 B tile 分别的字节数的计算方式则分别是 BM * BK * 2 以及 BK * BN * 2。它们的大小将决定了 SMEM 中能放置几个 TMA buffer，以及 TMA buffer 和 Store buffer 分别应该配置多少个。与此同时，由于 2 CTA MMA 的开启，每个 CTA 实际需要读取的 B tiles 的字节数变为 BK * BN，由此也可以看出 2 CTA MMA 的双重收益：即能提高算术强度（保持计算量不变的情况下，减少内存数据的加载），又能缩小 TMA buffer 的大小从而腾出更多的 SMEM 空间。
+按上述取值范围，一个 A tile 和 B tile 分别的字节数的计算方式则分别是 BM * BK * 2 以及 BK * BN * 2。它们的大小将决定了 SMEM 中能放置几个 TMA buffer，以及 TMA buffer 和 Store buffer 分别应该配置多少个。与此同时，由于 2 CTA MMA 的开启，每个 CTA 实际需要读取的 B tiles 的字节数减半，变为 BK * BN。由此也可以看出 2 CTA MMA 的双重收益：即能提高算术强度（保持计算量不变的情况下，减少内存数据的加载），又能缩小 TMA buffer 的大小从而腾出更多的 SMEM 空间。
 
-我们再来计算上述的各类 buffer 的大小，MMA buffer 的大小计算最简单，因为它是 accumulator，所以它的大小一定就是 BMxBN；TMA buffer 的大小取决于 A tile 和 B tile 分别的大小，即 BMxBK 和 BKxBN；tcgen05.ld buffer 我们会默认配置为 128x64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，即使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128x64， 即 16KB。与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
+tcgen05.ld buffer 我们会默认配置为 128 x 64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128 x 64， 即一个 buffer 大小为 16KB。与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
 
 ### Warp 的配置
 因为我们的 5 种流水线操作需要能够并行起来，于是我们会给不同的 Warp 分配不同的角色，这也称为 Warp Specialization。对于本文所探讨的设计方案而言，均采用如下配置：
