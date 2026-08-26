@@ -25,7 +25,7 @@ Blackwell 架构将这种单线程发出指令、专用硬件背后完成异步�
 ## 理论
 
 ### GEMM kernel 的宏观框架
-在介绍流水线的资源调度之前，我们先看一下 GEMM kernel 代码的整体框架，以便对数据的生产与消费流程有一个宏观的认知。首先大小为 M x N 的输出矩阵被以 BMxBN 的块大小划分成 M/BM x N/BN 块，每一块（output tile）就是一个独立的计算任务。计算任何的 BM x BN 一小块都需要在 K 维度进行迭代，即每次处理 BK，分 K/BK 步进行。与此同时，由于同一个 CTA 会处理多个 BM x BN 的块（即 persistent kernel，一个 CTA 会常驻在一个 SM 上），于是还会存在一个外层循环，来对不同的块进行迭代。两者循环嵌套起来，便可以得到如下的代码框架：
+在介绍流水线的资源调度之前，我们先看一下 GEMM kernel 代码的整体框架，以便对数据的生产与消费流程有一个宏观的认知。首先大小为 M x N 的输出矩阵被以 BMxBN 的块大小划分成 ceil(M/BM) x ceil(N/BN) 块，每一块（output tile）就是一个独立的计算任务。计算任何的 BM x BN 一小块都需要在 K 维度进行迭代，即每次处理 BK，分 ceil(K/BK) 步进行。与此同时，由于同一个 CTA 会处理多个 BM x BN 的块（即 persistent kernel，一个 CTA 会常驻在一个 SM 上），于是还会存在一个外层循环，来对不同的块进行迭代。两者循环嵌套起来，便可以得到如下的代码框架：
 
 ```text
 num_k = ceil(K / BK)                         # 每个 output tile 需要多少次 k 迭代
@@ -140,7 +140,7 @@ NS        = 6              # TMA buffer 个数
 NUM_ACC   = 2              # MMA buffer 个数（BN=256，TMEM 刚好放得下两个）
 NUM_STORE = 2              # store buffer 个数
 STORE_N   = 64             # 每次 TMA store 的列数
-num_k     = K / BK         # 每个 output tile 需要的 k 迭代次数
+num_k     = ceil(K / BK)   # 每个 output tile 需要的 k 迭代次数
 
 # ── Buffer 配置 ───────────────────────────────────────
 tma_buffers   = [TMA_Buffer(32KB)        for _ in range(NS)]
@@ -228,7 +228,7 @@ NS        = 4              # TMA buffer 个数（BK=128 时为 2）
 NUM_ACC   = 1              # BN=512 占满整个 TMEM，只有一个 MMA buffer
 NUM_STORE = 2
 STORE_N   = 64             # 每次从 TMEM 读出、stage、store 的列数
-num_k     = K / BK
+num_k     = ceil(K / BK)
 
 # ── Buffer 配置 ───────────────────────────────────────
 tma_buffers   = [TMA_Buffer(48KB)   for _ in range(NS)]
