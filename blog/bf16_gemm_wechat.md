@@ -152,7 +152,7 @@ for tile in my_output_tiles:                 # 持久化 kernel：每个 CTA 处
 # ── MMA Warp ─────────────────────────────────────────
 gk = 0
 for tile in my_output_tiles:
-    acc = tile % NUM_ACC                     # 每换一个 output tile 就换一个 MMA buffer
+    acc = tile % 2                           # 每换一个 output tile 就换一块 MMA buffer
     for k in range(num_k):
         s = (gk++) % 6
         wait_until_ready(tma_buffers[s])
@@ -162,36 +162,29 @@ for tile in my_output_tiles:
         make_free_on_mma_done(tma_buffers[s])    # MMA 消费完这片数据，TMA buffer 就能重新装填
     make_ready_on_mma_done(mma_buffers[acc])     # num_k 次累加全部完成，可以 drain 了
 ```
-可以看出这里 TMA warps 和 MMA warps 都有两层循环，外层循环对应不同的 output Tiles，而内存循环对应同一个 Output Tiles 不同的 K tile 迭代。然后二者都使用一个全局的计数器`gk`在 6 个 TMA buffer 上轮转。对于 TMA Warp 而言，它每次先等待对应的 TMA buffer 变为“可写”状态，之后发出加载数据的指令`tma_load_async`，以及一个异步的信号注册`make_ready_on_tma_done`，即，当数据加载到位以后，自动翻转 buffer 状态为“可读”。同样的，对于 MMA Warp 而言，它每次也是先等待对应的 TMA buffer 变为可读状态，之后便 issue MMA 指令，然后注册一个异步的信号`make_free_on_mma_done`，即，当对应的 TMA buffer 中的数据被消费完以后自动翻转其状态为可写。
+可以看出这里 TMA warps 和 MMA warps 都有两层循环，外层循环对应不同的 output Tiles，而内存循环对应同一个 Output Tiles 不同的 K tile 迭代。然后二者都使用一个全局的计数器`gk`在 6 个 TMA buffer 上轮转。对于 TMA Warp 而言，它每次先等待对应的 TMA buffer 变为“可写”状态，之后发出加载数据的指令`tma_load_async`，以及一个异步的信号注册`make_ready_on_tma_done`，即，当数据加载到位以后，自动翻转 buffer 状态为“可读”。同样的，对于 MMA Warp 而言，它每次也是先等待对应的 TMA buffer 变为可读状态，之后便 issue MMA 指令，然后注册一个异步的信号`make_free_on_mma_done`，即，当对应的 TMA buffer 中的数据被消费完以后自动翻转其状态为可写。两者结构上唯一的差别是 MMA warp 多了一层 MMA buffer 的轮转 —— `acc = tile % 2`，每换一个 output tile 就换一块 accumulator，这正是前面用来消除 WAR 停顿的双 MMA buffer；每个 output tile 的第一次迭代前它会额外等一次 `wait_until_free`，确认这块 accumulator 已经被 drain 干净，而 num_k 次累加做完之后再用 `make_ready_on_mma_done` 通知 epilogue 可以开始 drain。后面的设计二只有一块 accumulator，这一层轮转就会消失。
 
-```
+epilogue warps 那一侧的逻辑如下：
 
+```text
 # ── Epilogue Warps ───────────────────────────────────
-gs = 0
 for tile in my_output_tiles:
-    acc = tile % NUM_ACC
-    wait_until_ready(mma_buffers[acc])
-    for c in range(BN / STORE_N):            # 一次处理 64 列
-        tcgen05_ld_x32_async(mma_buffers[acc], c * STORE_N, ld_buffer, 0)
-        tcgen05_wait_ld()
-        if c == BN / STORE_N - 1:
-            make_free(mma_buffers[acc])  # 最后一段读进寄存器即可释放 MMA buffer
-
-        b = (gs++) % NUM_STORE
-        wait_until_free(store_buffers[b])
-        stage(ld_buffer, store_buffers[b])   # RMEM -> SMEM，同步
-        make_ready(store_buffers[b])
-        tma_store_async(store_buffers[b], C[tile, c])
-        make_free_on_tma_done(store_buffers[b])  # TMA store 写完，这块 SMEM 才能复用
+    acc = tile % 2                                     # 和 MMA warp 相同的轮转
+    wait_until_ready(mma_buffers[acc])                 # 等这块 accumulator 累加完毕
+    for c in range(BN / 64):                           # 每次 drain 64 列
+        tcgen05_ld(mma_buffers[acc], c * 64, ld_buffer)  # TMEM -> RMEM，同步
+        if c == BN / 64 - 1:
+            make_free(mma_buffers[acc])                # 最后一段读完，MMA 就能开始下一个 tile
+        tma_store_wait(1)                              # 至多留一个 store 在飞，轮到的 buffer 已空出
+        stage(ld_buffer, store_buffers[c % 2])         # RMEM -> SMEM，同步
+        tma_store_async(store_buffers[c % 2], C[tile, c])   # SMEM -> 内存，异步
 ```
 
-这已经是一个高度重叠的流水线：MMA 操作在对 TMA buffer0 的数据进行 MMA 操作时，与此同时，TMA load 操作也在进行，譬如或许在对 TMA buffer1 进行数据写入；与此同时，tcgen05.ld 和 stage 操作也在进行（这两者统称为 draining），譬如对另一个 MMA buffer 中数据进行 draining；与此同时，TMA store 操作也在进行，譬如对已经 draining 结束的数据进行内存写入。
+这里唯一需要解释的是 `tma_store_wait(1)`：TMA store 是异步的，我们并不逐个 buffer 去等它的完成信号，而是只要求在飞的 store 不超过一个 —— 轮到要用的那块 store buffer 自然已经空出来了。tcgen05.ld 与 stage 之间则是串行的，这是设计使然：ld buffer 只有一份，下一段数据必须等这一段 stage 完、寄存器空出来以后才能从 TMEM 里读出来。除此之外，5 种操作全部重叠了起来：MMA 在消费一块 TMA buffer 时，TMA load 正在填下一块，epilogue warps 正在 drain 另一块 accumulator，而 TMA store 正在把上一段结果写回内存。
 
-我们前面提到过的 5 种操作，除了 tcgen05.ld 和 stage 是串行的以外，其他所有操作全部并行了起来，全部处于同时运行的状态。这种串行是设计使然：tcgen05.ld buffer 只有一个，所以下一段数据必须等这一段 stage 完、寄存器空出来以后才能从 TMEM 里读出来。
+这个设计最关键的一处安排是：MMA warp 每换一个 output tile 就切换 accumulator，而 epilogue 把最后一段读进寄存器之后就立刻 `make_free`。两者合起来，一个 output tile 的 draining 只要在**下下个** output tile 开始前完成，MMA 就不会卡住 —— 这个窗口随 K 增大而变宽，K 越小则越容易出现 WAR 停顿。流水线设计的最终目标，就是**最小停顿地吃满 MMA**。
 
-从伪代码里也能读出这个设计最关键的一处安排：MMA warp 每换一个 output tile 就切换 MMA buffer，而 epilogue 在把最后一段读进寄存器之后就立刻 `make_free(mma_buffers[acc])`。两者合起来的效果是，一个 output tile 的 draining 只要在**下下个** output tile 开始前完成，MMA 就不会卡住。这个时间窗口和 K 的大小有关：K 越大窗口越大，K 越小则越可能造成 WAR 停顿。流水线设计的最终目标就是**最小停顿地吃满 MMA**。
-
-值得注意的是，同样的这一套逻辑也完全能够适配 BK=128 的情况，BK=128 与 BK=64 唯一的区别就是 TMA Buffer 从 6 个变为了 3 个，而逻辑部分完全不变 —— 这里我们把 BK 作为一个选配参数，有两种选择：64 和 128。
+同样一套逻辑也适配 BK=128：唯一的区别是 TMA buffer 从 6 个 32KB 变成 3 个 64KB，SMEM 占用仍是 224KB，逻辑一行都不用改。
 
 #### 性能数字
 
@@ -206,72 +199,20 @@ BN256 的设计其实已经非常流畅了：TMA buffer 有 6 个，应该能够
 
 不过，根据实际性能结果，我们发现，在比较大的方阵上，BN256 的性能停滞在了 1300T 左右。一个可能的原因是，尽管 MMA 的 issue 的确没什么停顿，但是每次只用了一半的 TMEM 做 accumulation 达到的算术强度还是不太够，也就是说，同样的数据量加载进来，它产生的计算量有限。
 
-于是在第二种设计中，我们换一种新的思路，即，把整个 TMEM 作为一个 single MMA buffer 使用，其 BN 是 512，简单的计算我们可以发现，BN=512 下，每个 K tile 的数据量会变为 1.5 倍 —— 从 32KB 变成 48KB，而计算量则会变为两倍，这样会导致同样的数据量进来，能够产生更大的计算量。但是与此同时，只用了一个逻辑上的 MMA buffer 的话，就会导致在 epilogue draining 期间，后续的 MMA 无法进行 issue，需要等待这个 MMA buffer 被腾空以后才能够 issue 后续的 MMA，这就是典型的 WAR 停顿，发生在两个 output tile 交接的时候。算术强度的提高，本质上其实还是减少了 RAW 停顿，相当于可以复用片上的数据，而不是重新从内存或 L2 中加载，即，等待数据的平均时间减少了。但是与此同时换来了更多 WAR 停顿。由于 WAR 停顿发生在外层循环，而 RAW 停顿发生在内层循环，我们有理由相信，对于 k 迭代次数较多的情况，这应该能带来性能提升。
+于是在设计二中我们换一种思路：把整个 TMEM 当作一块 MMA buffer 用，BN 配为 512。算一下就能看出这笔交易的两面 —— 每个 k tile 的数据量变为 1.5 倍（32KB → 48KB），而计算量变为两倍，也就是说同样的数据能喂出更多的计算，等价于减少了 RAW 停顿；代价则是只剩一块 accumulator，epilogue 在 drain 它的时候后续的 MMA 发不出去，于是在两个 output tile 的交接处换回了 WAR 停顿。由于 WAR 停顿发生在外层循环、RAW 停顿发生在内层循环，k 迭代次数越多，这笔交易就越划算。
 
 我们再计算一下 TMA buffer 的大小和数量，BM 依然设为 128，BN 现在是 512，BK 先取 64，套用前面的公式：
 
 * A tile: BM × BK × 2 = 128 × 64 × 2 = **16KB**
-* B tile: BK × BN × 2 / 2 = 64 × 512 × 2 / 2 = **32KB**
+* B tile: BK × BN × 2 = 64 × 512 × 2 = 64KB，2-CTA MMA 下每个 CTA 只加载一半，即 **32KB**
 
 所以一个 TMA buffer（一个 A tile 加一个 B tile）是 **48KB**，于是我们给 TMA buffer 配 **4 个**，共 192KB；store buffer 依然配 **2 个**，每个是 128 × 64 × 2 = 16KB，共 32KB。两者相加还是 224KB。
 
-代码的调度逻辑如下，主要区别在于此时没有两个 MMA buffer 的互相切换了：
+调度逻辑几乎可以照搬设计一，所以这里不再重复贴一遍代码，只说三处差别：
 
-```text
-# ── 参数 ──────────────────────────────────────────────
-NS        = 4              # TMA buffer 个数（BK=128 时为 2）
-NUM_ACC   = 1              # BN=512 占满整个 TMEM，只有一个 MMA buffer
-NUM_STORE = 2
-STORE_N   = 64             # 每次从 TMEM 读出、stage、store 的列数
-num_k     = ceil(K / BK)
-
-# ── Buffer 配置 ───────────────────────────────────────
-tma_buffers   = [TMA_Buffer(48KB)   for _ in range(NS)]
-mma_buffer    =  MMA_Buffer(256KB)                        # 整块 TMEM，128 x 512
-ld_buffer     =  TCGEN05_LD_Buffer(32KB)
-store_buffers = [Store_Buffer(16KB) for _ in range(NUM_STORE)]
-
-# ── TMA Warp ─────────────────────────────────────────
-gk = 0
-for tile in my_output_tiles:
-    for k in range(num_k):
-        s = (gk++) % NS
-        wait_until_free(tma_buffers[s])
-        tma_load_async(A, tile.m, k * BK, BM,   BK,     tma_buffers[s], 0)
-        tma_load_async(B, k * BK, tile.n, BK,   BN / 2, tma_buffers[s], 16KB)
-        make_ready_on_tma_done(tma_buffers[s])
-
-# ── MMA Warp ─────────────────────────────────────────
-gk = 0
-for tile in my_output_tiles:
-    for k in range(num_k):
-        s = (gk++) % NS
-        wait_until_ready(tma_buffers[s])
-        if k == 0:
-            wait_until_free(mma_buffer)   # 只有一个 accumulator：必须等上个 tile 彻底 drain 完
-        issue_mma_chain_async(mma_buffer, tma_buffers[s], accumulate = (k > 0))
-        make_free_on_mma_done(tma_buffers[s])
-    make_ready_on_mma_done(mma_buffer)
-
-# ── Epilogue Warps ───────────────────────────────────
-gs = 0
-for tile in my_output_tiles:
-    wait_until_ready(mma_buffer)
-    for c in range(BN / STORE_N):            # 一次处理 64 列，一共 8 段
-        tcgen05_ld_x32_async(mma_buffer, c * STORE_N, ld_buffer, 0)
-        tcgen05_wait_ld()
-        if c == BN / STORE_N - 1:
-            make_free(mma_buffer)        # 最后一段读完即可释放，让下一个 tile 的 MMA 尽早开始
-
-        b = (gs++) % NUM_STORE
-        wait_until_free(store_buffers[b])
-        stage(ld_buffer, store_buffers[b])
-        make_ready(store_buffers[b])
-        tma_store_async(store_buffers[b], C[tile, c])
-        make_free_on_tma_done(store_buffers[b])
-```
-
-和 BN256 版本对比，结构上其实只差了一处：`wait_until_free` 前面没有了 `acc = tile % NUM_ACC` 这一层轮转。只有一个 accumulator，所以下一个 output tile 的第一次 MMA 必须等到当前 tile 完全 drain 完才能发出，这就是前面说的多出来的 WAR 停顿。epilogue 的结构则和 BN256 一致，仍然是按 64 列一段依次读出、stage、store，只是 BN 翻倍之后每个 output tile 从 4 段变成了 8 段。
+* **TMA warp**：代码完全一样，只是每次搬的数据量从 32KB 变成 48KB（B 的那一半从 16KB 变成 32KB），buffer 个数从 6 个变成 4 个（BK=128 时为 2 个）。
+* **MMA warp**：`acc = tile % 2` 这一层轮转消失了 —— 只有一块 accumulator，`wait_until_free` 等的永远是同一块。于是下一个 output tile 的第一条 MMA 必须等当前 tile 彻底 drain 完才能发出，这正是前面说的、用算术强度换回来的 WAR 停顿。
+* **Epilogue warps**：结构不变，仍然是按 64 列一段依次 drain，只是 BN 翻倍之后每个 output tile 从 4 段变成 8 段。
 
 #### 性能数字
 
