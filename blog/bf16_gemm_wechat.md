@@ -162,7 +162,7 @@ for tile in my_output_tiles:
         make_free_on_mma_done(tma_buffers[s])    # MMA 消费完这片数据，TMA buffer 就能重新装填
     make_ready_on_mma_done(mma_buffers[acc])     # num_k 次累加全部完成，可以 drain 了
 ```
-可以看出这里 TMA warps 和 MMA warps 都有两层循环，外层循环对应不同的 output Tiles，而内存循环对应同一个 Output Tiles 不同的 K tile 迭代。然后二者都使用一个全局的计数器`gk`在 6 个 TMA buffer 上轮转。对于 TMA Warp 而言，它每次先等待对应的 TMA buffer 变为“可写”状态，之后发出加载数据的指令`tma_load_async`，以及一个异步的信号注册`make_ready_on_tma_done`，即，当数据加载到位以后，自动翻转 buffer 状态为“可读”。同样的，对于 MMA Warp 而言，它每次也是先等待对应的 TMA buffer 变为可读状态，之后便 issue MMA 指令，然后注册一个异步的信号`make_free_on_mma_done`，即，当对应的 TMA buffer 中的数据被消费完以后自动翻转其状态为可写。两者结构上唯一的差别是 MMA warp 多了一层 MMA buffer 的轮转 —— `acc = tile % 2`，每换一个 output tile 就换一块 accumulator，这正是前面用来消除 WAR 停顿的双 MMA buffer；每个 output tile 的第一次迭代前它会额外等一次 `wait_until_free`，确认这块 accumulator 已经被 drain 干净，而 num_k 次累加做完之后再用 `make_ready_on_mma_done` 通知 epilogue 可以开始 drain。后面的设计二只有一块 accumulator，这一层轮转就会消失。
+可以看出这里 TMA warps 和 MMA warps 都有两层循环，外层循环对应不同的 output Tiles，而内存循环对应同一个 Output Tiles 不同的 K tile 迭代。然后二者都使用一个全局的计数器`gk`在 6 个 TMA buffer 上轮转。对于 TMA Warp 而言，它每次先等待对应的 TMA buffer 变为“可写”状态，之后发出加载数据的指令`tma_load_async`，以及一个异步的信号注册`make_ready_on_tma_done`，即，当数据加载到位以后，自动翻转 buffer 状态为“可读”。同样的，对于 MMA Warp 而言，它每次也是先等待对应的 TMA buffer 变为可读状态，之后便 issue MMA 指令，然后注册一个异步的信号`make_free_on_mma_done`，即，当对应的 TMA buffer 中的数据被消费完以后自动翻转其状态为可写。两者结构上唯一的差别是 MMA warp 多了一层 MMA buffer 的轮转 —— `acc = tile % 2`，每换一个 output tile 就换一块 accumulator，即用来消除 WAR 停顿的双 MMA buffer；每个 output tile 的第一次迭代前需要等待对应的 accumulator 已经被 drain 干净，而 num_k 次累加做完之后再用 `make_ready_on_mma_done` 通知 epilogue 可以开始 drain。
 
 epilogue warps 那一侧的逻辑如下：
 
