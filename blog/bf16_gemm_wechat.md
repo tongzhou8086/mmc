@@ -50,8 +50,8 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 ![2-CTA MMA 开启前后：B tile 从读两遍变成只读一遍](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-cta-mma.png)
 
 
-### 5 种操作和 5 种容器
-我们上述的伪代码是比较宏观的和架构无关的，但在具体的流水线设计中，我们则会引入以下五种 Blackwell 架构特定的操作以及五种逻辑容器，每一种操作会从一种容器里读入数据，然后结果会写入另一种容器。下图是一个图示，箭头代表操作而框框代表容器。每种容器里也注明了它对应的物理存储介质，譬如是 SMEM、TMEM 还是寄存器（RMEM）等。
+### 5 种操作和 5 种 buffer
+我们上述的伪代码是比较宏观的和架构无关的，但在具体的流水线设计中，我们则会引入以下五种 Blackwell 架构特定的操作以及五种逻辑 buffer，每一种操作会从一种 buffer 里读入数据，然后结果会写入另一种 buffer。下图是一个图示，箭头代表操作而框框代表 buffer。每种 buffer 里也注明了它对应的物理存储介质，譬如是 SMEM、TMEM 还是寄存器（RMEM）等。
 
 ![5 种操作及其源和目的 buffer](https://raw.githubusercontent.com/tongzhou8086/mmc/main/data-flow-models/figures/operations-chain.png)
 
@@ -59,8 +59,8 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 
 > 值得说明的是，我们不保证所有情况下使用 TMA store buffer 进行缓冲后再写入内存都是最高效的，另一种不同的设计完全可以为了节省 SMEM 空间而直接进行 uncoalesced memory write，本文这里探讨的是一种比较通用的设计框架，不保证在任何情况下都是最高性能，但是是比较通用的。
 
-### 容器的状态翻转与操作之间的同步法则
-上图中我们也可以看出，既然同一个容器会被一个操作读，也会被另一个操作写，那为了保证操作的正确性，我们需要保证操作的原子性，即，同一时间，任何一个容器无法同时既被读也被写。于是我们给所有的容器都分配两种互斥的状态：可读和可写。一个操作的完成，即产生一个事件，可以翻转容器的状态。假设一个容器的初始状态为“可写”，然后写操作开始，容器里被灌入新的数据，当写操作结束时，容器的状态即翻转为“可读”，代表数据已经就绪。类似地，假如一个容器的状态为“可读”，然后读操作开始，容器里的数据逐渐被消费。当读操作结束时，容器的状态即翻转为“可写”，代表数据已被消费完，内容可以被覆盖了。
+### Buffer 的状态翻转与操作之间的同步法则
+上图中我们也可以看出，既然同一个 buffer 会被一个操作读，也会被另一个操作写，那为了保证操作的正确性，我们需要保证操作的原子性，即，同一时间，任何一个 buffer 无法同时既被读也被写。于是我们给所有的 buffer 都分配两种互斥的状态：可读和可写。一个操作的完成，即产生一个事件，可以翻转 buffer 的状态。假设一个 buffer 的初始状态为“可写”，然后写操作开始，buffer 里被灌入新的数据，当写操作结束时，buffer 的状态即翻转为“可读”，代表数据已经就绪。类似地，假如一个 buffer 的状态为“可读”，然后读操作开始，buffer 里的数据逐渐被消费。当读操作结束时，buffer 的状态即翻转为“可写”，代表数据已被消费完，内容可以被覆盖了。
 
 于是可以自然地推导出，任何一个操作要能够开始必须同时满足的两个条件是：
 * 源 Buffer 可读
@@ -109,7 +109,7 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 
 ## 实现
 
-### 各类容器大小的计算方式
+### 各类 buffer 大小的计算方式
 《强调硬件限制都有哪些，现在是散在段落之中，没那么明显，譬如前面的这段应该挪过来：不过片上存储空间毕竟有限，你不可能使得 BM 和 BN 无限大。对于 Blackwell 而言，能够使用的最大的 SMEM 的大小是 227 KB，而寄存器的总共的容量是 256KB，TMEM（Tensor Memory）的总容量也是 256KB，这些都限制了 BM、BN、BK 的配置大小。在实际应用中，一个常见的配置方案是 BM=128，BN=256，BK=64 或 128》
 
 首先我们看一下，由于 Blackwell 硬件限制导致的 BM、BN、BK 的取值范围。Blackwell 的 TMEM 的组织方式是 128 行乘 512 列，并且单次 MMA 指令也限制了 BM 必须为 128，对应 TMEM 的行数，而单次的 MMA 支持至多 N=64/128/256。当我们配置 BN 为 256 时，一个 MMA buffer 的大小为 128 行 x 256 列 —— 整个 TMEM 中可以放两个这样的 buffer。BK 的选值和内存访问的连续性有关，由于 BK 是 A tile 的 inner dimension，所以考虑到一些内存访问的连续性，我们会将 BK 配置为 64 的倍数，因为在 BF16 数据类型的情况下，BK 等于 64 的倍数，便能得到 128 个连续字节的内存访问模式，不会浪费任何内存带宽。所以一个 A Tile 和 B tile 分别的字节数的计算方式如下：
@@ -119,7 +119,7 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 
 它们的大小将决定了 SMEM 中能放置几个 TMA buffer，以及 TMA buffer 和 Store buffer 分别应该配置多少个？与此同时，由于 2 CTA MMA 的开启，对于 B tile，一个 cluster 中的两个 CTA 分别只需要加载 B tile 的一半即可，另一半 B tile 数据可以直接从隔壁 SM 读取，由此也可以看出 2 CTA MMA 的双重收益：即能提高算术强度（保持计算量不变的情况下，减少内存数据的加载），又能缩小 TMA buffer 的大小从而腾出更多的 SMEM 空间。
 
-我们再来计算上述的各类容器的大小，MMA buffer 的大小计算最简单，因为它是 accumulator，所以它的大小一定就是 BMxBN；TMA buffer 的大小取决于 A tile 和 B tile 分别的大小，即 BMxBK 和 BKxBN；tcgen05.ld buffer 我们会默认配置为 128x64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，即使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128x64， 即 16KB。与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
+我们再来计算上述的各类 buffer 的大小，MMA buffer 的大小计算最简单，因为它是 accumulator，所以它的大小一定就是 BMxBN；TMA buffer 的大小取决于 A tile 和 B tile 分别的大小，即 BMxBK 和 BKxBN；tcgen05.ld buffer 我们会默认配置为 128x64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，即使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128x64， 即 16KB。与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
 
 ### Warp 的配置
 因为我们的 5 种流水线操作需要能够并行起来，于是我们会给不同的 Warp 分配不同的角色，这也称为 Warp Specialization。对于本文所探讨的设计方案而言，均采用如下配置：
