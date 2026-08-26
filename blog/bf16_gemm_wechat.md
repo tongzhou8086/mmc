@@ -25,7 +25,7 @@ Blackwell 架构将这种单线程发出指令、专用硬件背后完成异步�
 ## 理论
 
 ### GEMM kernel 的宏观框架
-在介绍流水线的资源调度之前，我们先看一下 GEMM kernel 代码的整体框架，以便对数据的生产与消费流程有一个宏观的认知。首先大小为 M x N 的输出矩阵被以 BMxBN 的块大小划分成 M/BM x N/BN 块，每一块就是一个独立的计算任务（output tile）。计算任何的 BM x BN 一小块都需要在 K 维度进行迭代，即每次处理 BK，分 K/BK 步进行。与此同时，由于同一个 CTA 会处理多个 BM x BN 的块（即 persistent kernel，一个 CTA 会常驻在一个 SM 上），于是还会存在一个外层循环，来对不同的块进行迭代。两者循环嵌套起来，便可以得到如下的代码框架：
+在介绍流水线的资源调度之前，我们先看一下 GEMM kernel 代码的整体框架，以便对数据的生产与消费流程有一个宏观的认知。首先大小为 M x N 的输出矩阵被以 BMxBN 的块大小划分成 M/BM x N/BN 块，每一块（output tile）就是一个独立的计算任务。计算任何的 BM x BN 一小块都需要在 K 维度进行迭代，即每次处理 BK，分 K/BK 步进行。与此同时，由于同一个 CTA 会处理多个 BM x BN 的块（即 persistent kernel，一个 CTA 会常驻在一个 SM 上），于是还会存在一个外层循环，来对不同的块进行迭代。两者循环嵌套起来，便可以得到如下的代码框架：
 
 ```text
 num_k = ceil(K / BK)                         # 每个 output tile 需要多少次 k 迭代
@@ -43,7 +43,12 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
     store(C, tile.m, tile.n, acc)            # K 维度累加完毕，写回这块 BM x BN 的结果，又称为 epilogue
 ```
 
-在实际实现中，我们会开启的两种优化 2-CTA MMA 以及 CTA swizzle 会对如上的代码框架进行轻微调整，但是框架的本质并不会做任何变化。它本质上传达了这样一种流程：数据从内存被按块加载到 GPU 片上，之后会进入 Tensor Core 单元进行 MMA 操作。K 层循环结束，即代表一个输出块的结果计算完毕，这时便将结果写入内存。按照这样的流程依次计算所有分配给当前 CTA 的 output tiles。
+这段伪代码传达了这样一种流程：数据从内存被按块加载到 GPU 片上，之后会进入 Tensor Core 单元进行 MMA 操作。K 层循环结束，即代表一个输出块的结果计算完毕，这时便将结果写入内存。按照这样的流程依次计算所有分配给当前 CTA 的输出块。
+在实际实现中，我们会开启的两种优化 2-CTA MMA 以及 CTA swizzle 会对如上的代码框架进行轻微调整，但是框架的本质、循环的结构并不会有任何变化。2-CTA MMA 可以使得两个 CTA 构成一个 cluster 协同计算大小为 2BM x BN 的输出块，如下图所示；而 CTA swizzle 则类似于一种 L2 缓存分块，通过改变输出块分配给 CTA 的顺序来提高 L2 缓存命中率。
+
+
+![2-CTA MMA 开启前后：B tile 从读两遍变成只读一遍](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-cta-mma.png)
+
 
 ### 5 种操作和 5 种容器
 我们上述的伪代码是比较宏观的和架构无关的，但在具体的流水线设计中，我们则会引入以下五种 Blackwell 架构特定的操作以及五种逻辑容器，每一种操作会从一种容器里读入数据，然后结果会写入另一种容器。下图是一个图示，箭头代表操作而框框代表容器。每种容器里也注明了它对应的物理存储介质，譬如是 SMEM、TMEM 还是寄存器（RMEM）等。
