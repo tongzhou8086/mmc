@@ -112,10 +112,10 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 ### 各类 buffer 大小的计算方式
 片上存储空间毕竟有限，BM 和 BN 不可能无限大。在计算各类 buffer 的大小之前，我们先把 Blackwell 的硬件限制集中列一下，它们是后面所有配置的边界条件：
 
-* SMEM：每个 SM 最多可用 227KB —— TMA buffer 和 store buffer 都从这里出，它们一共能配几个由这个总量决定
-* TMEM：128 行 x 512 列的 fp32，共 256KB —— MMA 的结果只能放在这里，而且必须先经 tcgen05.ld 读进寄存器才能进入后续操作
-* 寄存器（RMEM）：每个 SM 共 256KB —— tcgen05.ld buffer 从这里出
-* 单次 MMA 指令：BM 固定为 128（正好对应 TMEM 的 128 行），N 只能取 64 / 128 / 256
+* SMEM 容量：每个 SM 最多可用 227KB —— TMA buffer 和 store buffer 都从这里出，它们一共能配几个由这个总量决定
+* TMEM 容量：128 行 x 512 列的 fp32，共 256KB —— MMA 的结果只能放在这里，而且必须先经 tcgen05.ld 读进寄存器才能进入后续操作
+* 寄存器（RMEM）容量：每个 SM 共 256KB —— tcgen05.ld buffer 从这里出
+* 单次 MMA 指令粒度：BM 固定为 128（正好对应 TMEM 的 128 行），N 只能取 64 / 128 / 256
 * 内存访问粒度：对内存的读写最好以 128 个连续字节为单位，这既约束了 BK 的取值（读取内存时的连续），也约束了 store buffer 的列数（写入内存时的连续）
 * 2-CTA MMA：一个 cluster 中的两个 CTA 各自只需加载半个 B tile，另一半 B tile 数据可以直接从隔壁 SM 读取，于是 TMA buffer 里 B 的那一半也随之减半
 
@@ -125,7 +125,7 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 
 tcgen05.ld buffer 我们会默认配置为 128 x 64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128 x 64， 即一个 buffer 大小为 16KB。与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
 
-### Warp 的配置
+### Warp Specialization 配置
 因为我们的 5 种流水线操作需要能够并行起来，于是我们会给不同的 Warp 分配不同的角色，这也称为 Warp Specialization。对于本文所探讨的设计方案而言，均采用如下配置：
 
 * 配一个 Warp 进行异步的 TMA load issue，又称 TMA Warp
