@@ -30,7 +30,7 @@ Blackwell 架构将这种单线程发出指令、专用硬件背后完成异步�
 ```text
 num_k = ceil(K / BK)                         # 每个 output tile 需要多少次 k 迭代
 
-# my_output_tiles：分配给当前 CTA 的那一批 output tile，分配方式见上图
+# my_output_tiles：分配给当前 CTA 的那一批 output tile
 for tile in my_output_tiles:                 # ── 外层循环：遍历 output tile ──
 
     acc = zeros(BM, BN)                      # 这个 output tile 的累加器
