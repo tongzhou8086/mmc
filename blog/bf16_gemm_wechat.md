@@ -18,7 +18,7 @@ $$ A.I. = \frac{(2\times BM \times BN \times BK)}{2\times BM \times BK + 2\times
 ### Blackwell 的异步设计 —— 软件成为调度者
 
 现代 GPU 的标配便是在 SM 中配置一个独立的 Tensor Core 单元，用来完成矩阵乘法计算 —— 相当于在通用硬件里面放置了一小块专用硬件，来提高计算效率。从 Hopper 架构开始，又出现了一种新的独立硬件单元，专门负责数据搬运，叫做 TMA。相比传统的 SIMT 式的数据搬运指令，即所有的线程都需要参与，用 TMA 完成数据搬运只需要一个线程发出指令，然后由专用硬件在背后异步完成。
-Blackwell 架构将这种单线程发出指令、专用硬件背后完成异步计算的方式进一步推到了极致：无论是 Tensor Core 单元还是 TMA 单元，都只需要一个线程进行指令发射，然后背后的硬件异步完成运算。从软件的角度，这意味着矩阵乘法计算以及数据搬运不再采用传统的 SIMT 模型。当然，GPU 并没有摒弃通用计算单元，CUDA Cores 和 Integer Cores 依然在那里。只不过现在做了分工 —— TMA 负责内存与 GPU 片上之间的数据搬运，异步运行；Tensor Core 负责矩阵乘法计算，也是异步运行；而 CUDA Cores 与 Integer Cores 则负责其余的工作，譬如将计算结果在 SMEM 中进行重组、或者特定的 epilogue 计算，仍以传统的 SIMT 方式同步运行。
+Blackwell 架构将这种单线程发出指令、专用硬件背后完成异步计算的方式进一步推到了极致：无论是 Tensor Core 单元还是 TMA 单元，都只需要一个线程进行指令发射，然后背后的硬件异步完成运算。从软件的角度，这意味着矩阵乘法计算以及数据搬运不再采用传统的 SIMT 模型。当然，GPU 并没有摒弃通用计算单元，CUDA Cores、Integer Cores 等依然在那里。只不过现在做了分工 —— TMA 负责内存与 GPU 片上之间的数据搬运，异步运行；Tensor Core 负责矩阵乘法计算，也是异步运行；而 CUDA Cores、Integer Cores 等通用单元则负责其余的工作，譬如将计算结果在 SMEM 中进行重组、或者特定的 epilogue 计算，仍以传统的 SIMT 方式同步运行。
 
 这种高度异步化的架构设计的结果就是，软件更多成为了一个调度者的角色，调度 TMA 指令和 MMA 指令什么时候、以何种顺序发射，以及何时进行同步的 epilogue 等等。除了指令的交织与调度，还有一种资源，便是片上的存储资源，即 SMEM 和寄存器如何进行分配？划分出多少用于辅助 TMA、MMA 或者是 epilogue？本文正是从流水线指令与资源调度这样一个视角来展开全文。鉴于篇幅限制，这里我们仅借做一个概述，更多的关于 Blackwell 的硬件特性请参考 [semianalysis 的文章](https://newsletter.semianalysis.com/p/dissecting-nvidia-blackwell-tensor)，硬件架构特性实际上会成为流水线设计的 constraints。
 
