@@ -112,10 +112,12 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 ### 各类 buffer 大小的计算方式
 片上存储空间毕竟有限，BM 和 BN 不可能无限大。在计算各类 buffer 的大小之前，我们先把 Blackwell 的硬件限制集中列一下，它们是后面所有配置的边界条件：
 
-* SMEM：每个 SM 最多可用 227KB —— TMA buffer 和 store buffer 都从这里出，决定了它们一共能配几个
-* TMEM：128 行 x 512 列的 fp32，共 256KB —— MMA 的结果只能放在这里
+* SMEM：每个 SM 最多可用 227KB —— TMA buffer 和 store buffer 都从这里出，它们一共能配几个由这个总量决定
+* TMEM：128 行 x 512 列的 fp32，共 256KB —— MMA 的结果只能放在这里，而且必须先经 tcgen05.ld 读进寄存器才能进入后续操作
 * 寄存器（RMEM）：每个 SM 共 256KB —— tcgen05.ld buffer 从这里出
 * 单次 MMA 指令：BM 固定为 128（正好对应 TMEM 的 128 行），N 只能取 64 / 128 / 256
+* 内存访问粒度：对内存的读写最好以 128 个连续字节为单位，这既约束了 BK 的取值，也约束了 store buffer 的列数
+* 2-CTA MMA：一个 cluster 中的两个 CTA 各自只需加载半个 B tile，于是 TMA buffer 里 B 的那一半也随之减半
 
 由这几条可以直接推出 tile sizes 的取值范围。BM 没有选择，只能是 128。BN 最大为 512，因为 TMEM 一行只有 512 个 fp32；当 BN 配为 256 时，一个 MMA buffer 是 128 行 x 256 列，整个 TMEM 正好放得下两个。BK 则不由容量决定，而是由内存访问的连续性决定：BK 是 A tile 的 inner dimension，在 BF16 下把 BK 配成 64 的倍数，一次访问正好凑满 128 个连续字节，不浪费任何内存带宽。实际应用中一个常见的配置方案就是 BM=128，BN=256，BK=64 或 128。
 
