@@ -117,7 +117,7 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 * 寄存器（RMEM）容量：每个 SM 共 256KB —— tcgen05.ld buffer 从这里出
 * 单次 MMA 指令粒度：BM 固定为 128（正好对应 TMEM 的 128 行），N 只能取 64 / 128 / 256
 * 内存访问粒度：对内存的读写最好以 128 个连续字节为单位，这既约束了 BK 的取值（读取内存时的连续），也约束了 store buffer 的列数（写入内存时的连续）
-* 2-CTA MMA：一个 cluster 中的两个 CTA 各自只需加载半个 B tile，另一半 B tile 数据可以直接从隔壁 SM 读取，于是 TMA buffer 里 B 的那一半也随之减半
+* 2-CTA MMA：一个 cluster 中的两个 CTA 各自只需加载半个 B tile，另一半 B tile 数据 Tensor Core 可以直接从隔壁 SM 读取
 
 由这几条可以直接推出 tile sizes 的取值范围。BM 没有选择，只能是 128。BN 最大为 512，因为 TMEM 一行只有 512 个 fp32；当 BN 配为 256 时，一个 MMA buffer 是 128 行 x 256 列，整个 TMEM 正好放得下两个。BK 则不由容量决定，而是由内存访问的连续性决定：BK 是 A tile 的 inner dimension，在 BF16 下把 BK 配成 64 的倍数，一次访问正好凑满 128 个连续字节，不浪费任何内存带宽。
 
