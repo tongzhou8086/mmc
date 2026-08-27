@@ -143,7 +143,7 @@ tcgen05.ld buffer 的话，我们遵循默认配置，大小为 128 行 x 64 列
 gk = 0
 for tile in my_output_tiles:                 # 持久化 kernel：每个 CTA 处理若干 output tile
     for k in range(num_k):
-        s = (gk++) % 6                       # 在 6 个 TMA buffer 上轮转
+        s = (gk++) % NS                      # 在 NS 个 TMA buffer 上轮转
         wait_until_free(tma_buffers[s])
         tma_load_async(A, tile.m, k * BK, BM,     BK,       tma_buffers[s], 0)
         tma_load_async(B, k * BK, tile.n, BK,     BN / 2,   tma_buffers[s], 16KB)
@@ -154,7 +154,7 @@ gk = 0
 for tile in my_output_tiles:
     acc = tile % 2                           # 每换一个 output tile 就换一块 MMA buffer
     for k in range(num_k):
-        s = (gk++) % 6
+        s = (gk++) % NS
         wait_until_ready(tma_buffers[s])
         if k == 0:
             wait_until_free(mma_buffers[acc])
@@ -162,7 +162,7 @@ for tile in my_output_tiles:
         make_free_on_mma_done(tma_buffers[s])    # MMA 消费完这片数据，TMA buffer 就能重新装填
     make_ready_on_mma_done(mma_buffers[acc])     # num_k 次累加全部完成，可以 drain 了
 ```
-可以看出这里 TMA warps 和 MMA warps 都有两层循环，外层循环对应不同的 output Tiles，而内存循环对应同一个 Output Tiles 不同的 K tile 迭代。然后二者都使用一个全局的计数器`gk`在 6 个 TMA buffer 上轮转。对于 TMA Warp 而言，它每次先等待对应的 TMA buffer 变为“可写”状态，之后发出加载数据的指令`tma_load_async`，以及一个异步的信号注册`make_ready_on_tma_done`，即，当数据加载到位以后，自动翻转 buffer 状态为“可读”。同样的，对于 MMA Warp 而言，它每次也是先等待对应的 TMA buffer 变为可读状态，之后便 issue MMA 指令，然后注册一个异步的信号`make_free_on_mma_done`，即，当对应的 TMA buffer 中的数据被消费完以后自动翻转其状态为可写。两者结构上唯一的差别是 MMA warp 多了一层 MMA buffer 的轮转 —— `acc = tile % 2`，每换一个 output tile 就换一块 accumulator，即用来消除 WAR 停顿的双 MMA buffer；每个 output tile 的第一次迭代前需要等待对应的 accumulator 已经被 drain 干净，而 num_k 次累加做完之后再用 `make_ready_on_mma_done` 通知 epilogue 可以开始 drain。
+可以看出这里 TMA warps 和 MMA warps 都有两层循环，外层循环对应不同的 output tiles，而内存循环对应同一个 output tiles 不同的 K tile 迭代。然后二者都使用一个全局的计数器`gk`在 6 个 TMA buffer（对于 BK=64 是 6 个，对于 BK=128 则是 3 个）上轮转。对于 TMA Warp 而言，它每次先等待对应的 TMA buffer 变为“可写”状态，之后发出加载数据的指令`tma_load_async`，以及一个异步的信号注册`make_ready_on_tma_done`，即，当数据加载到位以后，自动翻转 buffer 状态为“可读”。同样的，对于 MMA Warp 而言，它每次也是先等待对应的 TMA buffer 变为可读状态，之后便 issue MMA 指令，然后注册一个异步的信号`make_free_on_mma_done`，即，当对应的 TMA buffer 中的数据被消费完以后自动翻转其状态为可写。两者结构上唯一的差别是 MMA warp 多了一层 MMA buffer 的轮转 —— `acc = tile % 2`，每换一个 output tile 就换一块 accumulator，即用来消除 WAR 停顿的双 MMA buffer；每个 output tile 的第一次迭代前需要等待对应的 accumulator 已经被 drain 干净，而 num_k 次累加做完之后再用 `make_ready_on_mma_done` 通知 epilogue 可以开始 drain。
 
 epilogue warps 那一侧的逻辑如下：
 
@@ -175,16 +175,11 @@ for tile in my_output_tiles:
         tcgen05_ld(mma_buffers[acc], c * 64, ld_buffer)  # TMEM -> RMEM，同步
         if c == BN / 64 - 1:
             make_free(mma_buffers[acc])                # 最后一段读完，MMA 就能开始下一个 tile
-        tma_store_wait(1)                              # 至多留一个 store 在飞，轮到的 buffer 已空出
+        tma_store_wait(1)                              # 等待上上轮的 store buffer 空出，1 代表只有 1 个 store in-flight
         stage(ld_buffer, store_buffers[c % 2])         # RMEM -> SMEM，同步
         tma_store_async(store_buffers[c % 2], C[tile, c])   # SMEM -> 内存，异步
 ```
-
-这里唯一需要解释的是 `tma_store_wait(1)`：TMA store 是异步的，我们并不逐个 buffer 去等它的完成信号，而是只要求在飞的 store 不超过一个 —— 轮到要用的那块 store buffer 自然已经空出来了。tcgen05.ld 与 stage 之间则是串行的，这是设计使然：ld buffer 只有一份，下一段数据必须等这一段 stage 完、寄存器空出来以后才能从 TMEM 里读出来。除此之外，5 种操作全部重叠了起来：MMA 在消费一块 TMA buffer 时，TMA load 正在填下一块，epilogue warps 正在 drain 另一块 accumulator，而 TMA store 正在把上一段结果写回内存。
-
-这个设计最关键的一处安排是：MMA warp 每换一个 output tile 就切换 accumulator，而 epilogue 把最后一段读进寄存器之后就立刻 `make_free`。两者合起来，一个 output tile 的 draining 只要在**下下个** output tile 开始前完成，MMA 就不会卡住 —— 这个窗口随 K 增大而变宽，K 越小则越容易出现 WAR 停顿。流水线设计的最终目标，就是**最小停顿地吃满 MMA**。
-
-同样一套逻辑也适配 BK=128：唯一的区别是 TMA buffer 从 6 个 32KB 变成 3 个 64KB，SMEM 占用仍是 224KB，逻辑一行都不用改。
+在 epilogue 的部分，我们先等待 MMA buffer 变为“可读”，然后在一个循环里面每次读取 TMEM 结果的 64 列，在最后的 64 列读取完毕以后，便可释放完成 draining 的 MMA buffer，即上面的`make_free`。每 64 列读取完以后，先等待有 store buffer 空出来了，然后往里面进行写入，最后 issue 一个 TMA store。
 
 #### 性能数字
 
