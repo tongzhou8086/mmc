@@ -188,13 +188,11 @@ for tile in my_output_tiles:
 
 ![BN=256 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/perf-bn256.png)
 
+其实这个设计已经是很流畅了，我们采用了 6 个 TMA buffer、2 个 MMA buffer。在较小的方阵上，6 个实现里性能最高的那个已经比较接近 cuBLAS 了；但是对于较大的方阵，它们的性能基本停滞在了 1300T 左右，而 cuBLAS 则高达 1450T。一个可能的原因是，尽管 MMA 的 issue 的确没什么停顿，但是每次只用了一半的 TMEM 做 accumulation 达到的算术强度还是不太够，也就是说，同样的数据量加载进来，它产生的计算量有限。
+
 
 ### 设计二：单 buffer BN512
-BN256 的设计其实已经非常流畅了：TMA buffer 有 6 个，应该能够流畅地将数据加载到 SMEM 中，这样 MMA 总是有操作数可以计算 —— 这一部分针对的是 RAW 停顿；此外 MMA buffer 也有两个，所以如果一个 output tile 的 epilogue 能在下下个 output tile 开始之前完成，WAR 停顿也就被藏了起来。两者合起来，理论上我们就可以持续不停地 issue MMA，这已经是一个非常流畅的设计了。
-
-不过，根据实际性能结果，我们发现，在比较大的方阵上，BN256 的性能停滞在了 1300T 左右。一个可能的原因是，尽管 MMA 的 issue 的确没什么停顿，但是每次只用了一半的 TMEM 做 accumulation 达到的算术强度还是不太够，也就是说，同样的数据量加载进来，它产生的计算量有限。
-
-于是在设计二中我们换一种思路：把整个 TMEM 当作一块 MMA buffer 用，BN 配为 512。算一下就能看出这笔交易的两面 —— 每个 k tile 的数据量变为 1.5 倍（32KB → 48KB），而计算量变为两倍，也就是说同样的数据能喂出更多的计算，等价于减少了 RAW 停顿；代价则是只剩一块 accumulator，epilogue 在 drain 它的时候后续的 MMA 发不出去，于是在两个 output tile 的交接处换回了 WAR 停顿。由于 WAR 停顿发生在外层循环、RAW 停顿发生在内层循环，k 迭代次数越多，这笔交易就越划算。
+在设计二中我们换一种思路：把整个 TMEM 当作一块 MMA buffer 用，BN 配为 512。再次计算下 tile sizes 我们能发现，每个 k tile 的数据量变为 1.5 倍（32KB → 48KB），而计算量变为两倍，也就是说同样的数据能喂出更多的计算，等价于减少了 RAW 停顿；而 tradeoff 则是只剩一块 accumulator，epilogue 在 drain 它的时候后续的 MMA 无法开始 issue，于是在两个 output tile 的交接处重新出现了 WAR 停顿。由于 WAR 停顿发生在外层循环、RAW 停顿发生在内层循环，我们有理由推测，k 迭代次数越多，产生的 WAR 停顿影响就越小。
 
 我们再计算一下 TMA buffer 的大小和数量，BM 依然设为 128，BN 现在是 512，BK 先取 64，套用前面的公式：
 
