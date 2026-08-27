@@ -194,18 +194,11 @@ for tile in my_output_tiles:
 ### 设计二：单 buffer BN512
 在设计二中我们换一种思路：把整个 TMEM 当作一块 MMA buffer 用，BN 配为 512。再次计算下 tile sizes 我们能发现，每个 k tile 的数据量变为 1.5 倍（32KB → 48KB），而计算量变为两倍，也就是说同样的数据能喂出更多的计算，等价于减少了 RAW 停顿；而 tradeoff 则是只剩一块 accumulator，epilogue 在 drain 它的时候后续的 MMA 无法开始 issue，于是在两个 output tile 的交接处重新出现了 WAR 停顿。由于 WAR 停顿发生在外层循环、RAW 停顿发生在内层循环，我们有理由推测，k 迭代次数越多，产生的 WAR 停顿影响就越小。
 
-我们再计算一下 TMA buffer 的大小和数量，BM 依然设为 128，BN 现在是 512，BK 先取 64，套用前面的公式：
-
-* A tile: BM × BK × 2 = 128 × 64 × 2 = **16KB**
-* B tile: BK × BN × 2 = 64 × 512 × 2 = 64KB，2-CTA MMA 下每个 CTA 只加载一半，即 **32KB**
-
-所以一个 TMA buffer（一个 A tile 加一个 B tile）是 **48KB**，于是我们给 TMA buffer 配 **4 个**，共 192KB；store buffer 依然配 **2 个**，每个是 128 × 64 × 2 = 16KB，共 32KB。两者相加还是 224KB。
-
 调度逻辑几乎可以照搬设计一，所以这里不再重复贴一遍代码，只说三处差别：
 
-* **TMA warp**：代码完全一样，只是每次搬的数据量从 32KB 变成 48KB（B 的那一半从 16KB 变成 32KB），buffer 个数从 6 个变成 4 个（BK=128 时为 2 个）。
-* **MMA warp**：`acc = tile % 2` 这一层轮转消失了 —— 只有一块 accumulator，`wait_until_free` 等的永远是同一块。于是下一个 output tile 的第一条 MMA 必须等当前 tile 彻底 drain 完才能发出，这正是前面说的、用算术强度换回来的 WAR 停顿。
-* **Epilogue warps**：结构不变，仍然是按 64 列一段依次 drain，只是 BN 翻倍之后每个 output tile 从 4 段变成 8 段。
+* MMA warp：代码完全一样，只是每次搬的数据量从 32KB 变成 48KB（B 的那一半从 16KB 变成 32KB），buffer 个数从 6 个变成 4 个（BK=128 时为 2 个）。
+* MMA warp：`acc = tile % 2` 这一层轮转消失了 —— 只有一块 accumulator。于是下一个 output tile 的第一条 MMA 必须等当前 tile  drain 完才能 issue，这正是前面说的、用算术强度换回来的 WAR 停顿。此外逻辑上 128 x 512 的 accumulator 需要两次 128 x 256 大小的 MMA 指令发射。
+* Epilogue warps：结构不变，仍然是按 64 列一段依次 drain，只是 BN 翻倍之后每个 output tile 从 4 段变成 8 段。
 
 #### 性能数字
 
@@ -214,11 +207,7 @@ BN512 的上述设计也可以有六种选配，BK=64/128，GSM=8/12/16，如果
 ![BN=512 性能对比](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/perf-bn512.png)
 
 
-几点观察：
-
-* 相比 BN256，BN512 在稍大一些的方阵上确实能达到高得多的性能 —— 稳定飚在了 1450T 左右。一个可能的解释是，方阵越大 K 维度也越大，Epilogue 所占的时间比例便相应缩小 —— BN512 让计算部分更快，代价是 Epilogue 带来的 WAR 停顿更难藏，所以正适合 K 比较大的情况。
-* GSM 在这里的作用比 BN256 明显得多：BK=128 在 20480 上从 GSM=8 的 1423 涨到 GSM=16 的 1468；BK=64 在 17408 上从 1316 涨到 1412。
-* 最好的一档（BK=128 + GSM=16）在 18 个尺寸中有 10 个跑赢了 cuBLAS。
+相比设计一，尽管在小尺寸方阵上的提升有限，但在稍大一些的方阵上确实能达到高得多的性能 —— 稳定飚在了 1450T 左右。如我们所预测的，方阵越大 K 维度也越大，Epilogue 所占的时间比例便相应缩小，单 MMA buffer 带来的 WAR 停顿更不明显。这里最好的一档（BK=128 + GSM=16）在 18 个尺寸中有 10 个跑赢了 cuBLAS。
 
 ### 设计三：双 buffer BN512
 
