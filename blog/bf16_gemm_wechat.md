@@ -1,6 +1,6 @@
 # Blackwell 矩阵乘法优化分享（一）
 
-这个系列的文章中，以我们在 B200 上优化矩阵乘法的经历为基础，讲一个以“流水线编排”为核心的故事，一种从“算法设计”的视角来看待矩阵乘法 kernel 的编写。除流水线编排之外，我们只使用两种必备的常规优化 —— 2-CTA MMA 与 CTA swizzling —— 便能在 4096 及以上的方阵上接近乃至超越 cuBLAS。事实上，本系列中介绍的第四版设计在 18 个尺寸的方阵下，有 12 个都跑赢了 cuBLAS，steady-state 性能最高可达 1450T 以上。
+这个系列的文章中，以我们在 B200 上优化 BF16 矩阵乘法的经历为基础，讲一个以“流水线编排”为核心的故事，一种从“算法设计”的视角来看待矩阵乘法 kernel 的编写。除流水线编排之外，我们只使用两种必备的常规优化 —— 2-CTA MMA 与 CTA swizzling —— 便能在 4096 及以上的方阵上接近乃至超越 cuBLAS。事实上，本系列中介绍的最终版设计在 18 个尺寸的方阵下，有 12 个都跑赢了 cuBLAS，steady-state 性能最高可达 1450T 以上。
 
 ## 背景
 
@@ -9,7 +9,7 @@
 
 ![分块矩阵乘法：A 的一个行条与 B 的一个列条，产生 C 的一个 tile](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/tiled-gemm.png)
 
-如上图所示，分块计算的矩阵乘法有三个维度，它们常常被称为 BM、BN、BK，即，每次加载 BMxBK 大小的 A（称为 A tile），以及 BKxBN 大小的 B（称为 B tile），以此计算 BMxBN 大小的 C 的部分结果（Partial accumulation）。BM、BN、BK 我们统称为分块大小（tile sizes），与此相关的另一个核心概念叫做算术强度（arithmetic intensity），它用来衡量每单位的 memory traffic ，譬如每字节，能够产生的计算量是多少。算术强度是一个软件本身的特征，不同的软件编写方式，会产生不同的算术强度。假如 A tile 和 B tile 都能够完全地存放在片上存储中，即 SMEM（Shared Memory，共享内存）或寄存器，那算术强度的计算方式即为
+如上图所示，分块计算的矩阵乘法有三个维度，它们常常被称为 BM、BN、BK，即，每次加载 BMxBK 大小的 A（称为 A tile），以及 BKxBN 大小的 B（称为 B tile），以此计算 BMxBN 大小的 C 的部分结果（Partial accumulation）。BM、BN、BK 我们统称为分块大小（tile sizes），与此相关的另一个核心概念叫做算术强度（arithmetic intensity），它用来衡量每单位的 memory traffic ，譬如每字节，能够产生的计算量是多少。算术强度是一个软件本身的特征，不同的软件编写方式，会产生不同的算术强度。假如 A tile 和 B tile 都能够完全地存放在片上存储中，即 SMEM（Shared Memory，共享内存）或寄存器，那算术强度，即浮点数计算次数与字节数比例的计算方式为
 
 $$ A.I. = \frac{(2\times BM \times BN \times BK)}{2\times BM \times BK + 2\times BK \times BN}$$
 
@@ -18,14 +18,14 @@ $$ A.I. = \frac{(2\times BM \times BN \times BK)}{2\times BM \times BK + 2\times
 ### Blackwell 的异构设计 —— 流水线调度成为性能的关键
 
 现代 GPU 的标配便是在 SM 中配置一个独立的 Tensor Core 单元，用来完成矩阵乘法计算 —— 相当于在通用硬件里面放置了一小块专用硬件，来提高计算效率。从 Hopper 架构开始，又出现了一种新的独立硬件单元，专门负责数据搬运，叫做 TMA。相比传统的 SIMT 式的数据搬运指令，即所有的线程都需要参与，用 TMA 完成数据搬运只需要一个线程发出指令，然后由专用硬件在背后异步完成。
-Blackwell 架构将这种单线程发出指令、专用硬件背后完成异步计算的方式进一步推到了极致：无论是 Tensor Core 单元还是 TMA 单元，都只需要一个线程进行指令发射，然后背后的硬件异步完成运算。从软件的角度，这意味着矩阵乘法计算以及数据搬运不再采用传统的 SIMT 模型。当然，GPU 并没有摒弃通用计算单元，CUDA Cores、Integer Cores 等依然在那里。只不过现在做了分工 —— TMA 负责内存与 GPU 片上之间的数据搬运，异步运行；Tensor Core 负责矩阵乘法计算，也是异步运行；而 CUDA Cores、Integer Cores 等通用单元则负责其余的工作，譬如将计算结果在 SMEM 中进行重组、或者特定的 epilogue 计算，仍以传统的 SIMT 方式同步运行。
+Blackwell 架构将这种单线程发出指令、专用硬件背后完成异步计算的方式进一步推到了极致：无论是 Tensor Core 单元还是 TMA 单元，都只需要一个线程进行指令发射，然后背后的硬件异步完成运算。从软件的角度，这意味着矩阵乘法的纯数学计算部分以及数据搬运不再采用传统的 SIMT 模型。当然，GPU 并没有摒弃通用计算单元，CUDA Cores、Integer Cores 等依然在那里。只不过现在做了分工 —— TMA 负责内存与 GPU 片上之间的数据搬运，异步运行；Tensor Core 负责矩阵乘法计算，也是异步运行；而 CUDA Cores、Integer Cores 等通用单元则负责其余的工作，譬如将计算结果在 SMEM 中进行重组、或者特定的 epilogue 计算，仍以传统的 SIMT 方式同步运行。
 
-这种高度异步化的架构设计的结果就是，软件更多成为了一个调度者的角色，调度 TMA 指令和 MMA 指令什么时候、以何种顺序发射，以及何时进行同步的 epilogue 等等。除了指令的交织与调度，还有一种资源，便是片上的存储资源，即 SMEM 和寄存器如何进行分配？划分出多少用于辅助 TMA、MMA 或者是 epilogue？本文正是从流水线指令与资源调度这样一个视角来展开全文。鉴于篇幅限制，这里我们仅借做一个概述，更多的关于 Blackwell 的硬件特性请参考 [semianalysis 的文章](https://newsletter.semianalysis.com/p/dissecting-nvidia-blackwell-tensor)，硬件架构特性实际上会成为流水线设计的 constraints。
+这种高度异步化的架构设计的结果就是，软件更多成为了一个调度者的角色，调度 TMA 指令和 MMA 指令什么时候、以何种顺序发射，以及何时进行同步的 epilogue 等等。除了指令的交织与调度，还有一种资源，便是片上的存储资源，即 SMEM 和寄存器如何进行分配？划分出多少用于辅助 TMA、MMA 或者是 epilogue？本文正是从流水线指令与资源调度这样一个视角来展开全文。鉴于篇幅限制，这里我们仅借做一个概述，更多的关于 Blackwell 的硬件特性请参考 [semianalysis 的文章](https://newsletter.semianalysis.com/p/dissecting-nvidia-blackwell-tensor)。
 
 ## 理论
 
 ### GEMM kernel 的宏观框架
-在介绍流水线的资源调度之前，我们先看一下 GEMM kernel 代码的整体框架，以便对数据的生产与消费流程有一个宏观的认知。首先大小为 M x N 的输出矩阵被以 BMxBN 的块大小划分成 ceil(M/BM) x ceil(N/BN) 块，每一块（output tile）就是一个独立的计算任务。计算任何的 BM x BN 一小块都需要在 K 维度进行迭代，即每次处理 BK，分 ceil(K/BK) 步进行。与此同时，由于同一个 CTA 会处理多个 BM x BN 的块（即 persistent kernel，一个 CTA 会常驻在一个 SM 上），于是还会存在一个外层循环，来对不同的块进行迭代。两者循环嵌套起来，便可以得到如下的代码框架：
+在介绍流水线的资源调度之前，我们先看一下 GEMM kernel 代码的整体框架，以便对数据的生产与消费流程有一个宏观的认知。首先大小为 M x N 的输出矩阵被以 BMxBN 的块大小划分成 `ceil(M/BM) x ceil(N/BN)` 块，每一块（output tile）就是一个独立的计算任务。计算任何的 BM x BN 一小块都需要在 K 维度进行迭代，即每次处理 BK，分 ceil(K/BK) 步进行。与此同时，由于同一个 CTA 会处理多个 BM x BN 的块（即 persistent kernel，一个 CTA 会常驻在一个 SM 上），于是还会存在一个外层循环，来对不同的块进行迭代。两者循环嵌套起来，便可以得到如下的代码框架：
 
 ```text
 num_k = ceil(K / BK)                         # 每个 output tile 需要多少次 k 迭代
@@ -44,7 +44,7 @@ for tile in my_output_tiles:                 # ── 外层循环：遍历 outp
 ```
 
 这段伪代码传达了这样一种流程：数据从内存被按块加载到 GPU 片上，之后会进入 Tensor Core 单元进行 MMA 操作。K 层循环结束，即代表一个输出块的结果计算完毕，这时便将结果写入内存。按照这样的流程依次计算所有分配给当前 CTA 的输出块。
-在实际实现中，我们会开启的两种优化 2-CTA MMA 以及 CTA swizzle 会对如上的代码框架进行轻微调整，但是框架的本质、循环的结构并不会有任何变化。2-CTA MMA 可以使得两个 CTA 构成一个 cluster 协同计算大小为 2BM x BN 的输出块，如下图所示；而 CTA swizzle 则类似于一种 L2 缓存分块，通过改变输出块分配给 CTA 的顺序来提高 L2 缓存命中率。
+在实际实现中，我们会开启的两种优化 2-CTA MMA 以及 CTA swizzle 会对如上的代码框架进行轻微调整，但是框架的本质、循环的结构并不会有任何变化。2-CTA MMA 可以使得两个 CTA 构成一个 cluster 协同计算大小为 2BM x BN 的输出块，如下图所示；而 [CTA swizzle](https://triton-lang.org/main/getting-started/tutorials/03-matrix-multiplication.html#l2-cache-optimizations) 则类似于一种 L2 缓存分块，通过改变输出块分配给 CTA 的顺序来提高 L2 缓存命中率。
 
 
 ![2-CTA MMA 开启前后：B tile 从读两遍变成只读一遍](https://raw.githubusercontent.com/tongzhou8086/mmc/main/blog/figures/two-cta-mma.png)
