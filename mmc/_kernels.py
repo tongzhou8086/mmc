@@ -23,6 +23,10 @@ class KernelSpec:
     # each CTA holds 128 B rows for the N=256 MMA plus this many for the N=128
     # MMA, from a different global N offset.
     bn_local_tail: int = 0
+    # Cluster-launch-control kernels are launched with one cluster per output
+    # tile rather than one per SM pair: the hardware, not a static stride,
+    # decides which cluster runs which tile.
+    clc: bool = False
 
 
 # These are the retained MXFP8 candidates from mxfp8-gemm-study/autotune.
@@ -134,6 +138,88 @@ BF16_KERNELS = (
     KernelSpec(
         "bf16-double-ns3-store2-bk128-bn512-2round", 128, 384, 230400,
         m_multiple=256, n_multiple=512,
+    ),
+    # Fifth design: design four plus cluster launch control. Same pipeline,
+    # different work distribution - the grid is one cluster per output tile and
+    # a cluster takes its next tile by cancelling one that has not launched,
+    # which removes the ragged last wave of the static persistent partition.
+    # GSM 8 / 12 / 16 as usual; the swizzle still orders the grid, CLC only
+    # decides who runs what.
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc3", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc3-gsm12", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc3-gsm16", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc3", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc3-gsm12", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc3-gsm16", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    # try_cancel claims a tile, it does not merely name one, so the ring depth
+    # is how many tiles a cluster holds beyond the one it runs. -clc1 and -clc2
+    # are the shallower claims; on shapes with only a few tiles per cluster the
+    # deep ring lets the first clusters to start hoard work.
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc1", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc1-gsm12", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc1-gsm16", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc2", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc2-gsm12", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc2-gsm16", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc1", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc1-gsm12", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc1-gsm16", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc2", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc2-gsm12", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc2-gsm16", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
     ),
     KernelSpec(
         "bf16-single-ns4-store2-bk64-bn512-load256-w8-splitacc-splitdr",
