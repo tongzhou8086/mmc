@@ -76,7 +76,7 @@ constexpr int EPILOGUE_TMA_PIPELINED = 1;  // 1 = chunked staged TMA-store overl
 constexpr int SINGLE_TMEM_ACCUM = 1;  // 1 = overlap path synchronizes epilogue drain before reusing one TMEM accumulator
 constexpr int SEGMENTED_PANELS = 0;  // 1 = BN512 segmented panel schedule (SEG = NS k-tiles per segment)
 constexpr int TWO_CTA          = 1;  // 1 = 2-CTA cluster MMA (cta_group::2); 0 = single-CTA
-constexpr int CLC_DEPTH        = 3;  // try_cancel responses kept in flight
+constexpr int CLC_DEPTH        = 3;  // tiles claimed ahead (see DEPTHS)
 
 // ── Derived constants (do not edit) ─────────────────────────────────
 constexpr int MMA_K     = 16;

@@ -146,27 +146,79 @@ BF16_KERNELS = (
     # GSM 8 / 12 / 16 as usual; the swizzle still orders the grid, CLC only
     # decides who runs what.
     KernelSpec(
-        "bf16-double-ns6-store2-bk64-bn512-2round-clc", 64, 384, 230400,
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc3", 64, 384, 230400,
         m_multiple=256, n_multiple=512, clc=True,
     ),
     KernelSpec(
-        "bf16-double-ns6-store2-bk64-bn512-2round-clc-gsm12", 64, 384, 230400,
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc3-gsm12", 64, 384, 230400,
         m_multiple=256, n_multiple=512, clc=True,
     ),
     KernelSpec(
-        "bf16-double-ns6-store2-bk64-bn512-2round-clc-gsm16", 64, 384, 230400,
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc3-gsm16", 64, 384, 230400,
         m_multiple=256, n_multiple=512, clc=True,
     ),
     KernelSpec(
-        "bf16-double-ns3-store2-bk128-bn512-2round-clc", 128, 384, 230400,
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc3", 128, 384, 230400,
         m_multiple=256, n_multiple=512, clc=True,
     ),
     KernelSpec(
-        "bf16-double-ns3-store2-bk128-bn512-2round-clc-gsm12", 128, 384, 230400,
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc3-gsm12", 128, 384, 230400,
         m_multiple=256, n_multiple=512, clc=True,
     ),
     KernelSpec(
-        "bf16-double-ns3-store2-bk128-bn512-2round-clc-gsm16", 128, 384, 230400,
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc3-gsm16", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    # try_cancel claims a tile, it does not merely name one, so the ring depth
+    # is how many tiles a cluster holds beyond the one it runs. -clc1 and -clc2
+    # are the shallower claims; on shapes with only a few tiles per cluster the
+    # deep ring lets the first clusters to start hoard work.
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc1", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc1-gsm12", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc1-gsm16", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc2", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc2-gsm12", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns6-store2-bk64-bn512-2round-clc2-gsm16", 64, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc1", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc1-gsm12", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc1-gsm16", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc2", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc2-gsm12", 128, 384, 230400,
+        m_multiple=256, n_multiple=512, clc=True,
+    ),
+    KernelSpec(
+        "bf16-double-ns3-store2-bk128-bn512-2round-clc2-gsm16", 128, 384, 230400,
         m_multiple=256, n_multiple=512, clc=True,
     ),
     KernelSpec(

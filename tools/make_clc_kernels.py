@@ -10,8 +10,9 @@ asks the hardware to cancel a not-yet-launched cluster and inherit its tile
 (`clusterlaunchcontrol.try_cancel`). The tile ids come back in launch order, so
 the GSM swizzle - and the L2 locality it buys - is untouched.
 
-Writes six kernels: {bk64 NS=6, bk128 NS=3} x GSM {8, 12, 16}, named
-`...-2round-clc[-gsmNN].cu`, and leaves the originals alone.
+Writes {bk64 NS=6, bk128 NS=3} x claim depth {1, 2, 3} x GSM {8, 12, 16},
+named `...-2round-clcD[-gsmNN].cu`, and leaves the originals alone. Depth 1 is
+the one to use: see benchmarks/clc-results.md.
 """
 
 from pathlib import Path
@@ -22,6 +23,12 @@ BASES = {
     128: "bf16-double-ns3-store2-bk128-bn512-2round",
 }
 GSMS = (8, 12, 16)
+# try_cancel does not merely fetch a tile id, it *claims* the tile, so the ring
+# depth is how many tiles a cluster claims beyond the one it is running. Deep
+# rings hide the response latency but let the clusters that start first grab
+# work the others will sit idle for - which is exactly the imbalance CLC exists
+# to remove. Depth is therefore a swept knob, not a constant.
+DEPTHS = (1, 2, 3)
 
 
 # ── the CLC device helpers, inserted after the mbarrier ones ────────────
@@ -65,7 +72,7 @@ __device__ __forceinline__ int clc_first_ctaid(uint32_t resp_smem) {
 # ── knobs ───────────────────────────────────────────────────────────────
 OLD_KNOB = "constexpr int TWO_CTA          = 1;  // 1 = 2-CTA cluster MMA (cta_group::2); 0 = single-CTA"
 NEW_KNOB = OLD_KNOB + """
-constexpr int CLC_DEPTH        = 3;  // try_cancel responses kept in flight"""
+constexpr int CLC_DEPTH        = 3;  // tiles claimed ahead (see DEPTHS)"""
 
 # ── launch-contract comment ─────────────────────────────────────────────
 OLD_CONTRACT = "//   grid    = sm_count - sm_count % CTA_GROUP   (persistent, EPILOGUE_OVERLAP)"
@@ -280,13 +287,18 @@ def main():
     for bk, stem in BASES.items():
         base = (KERNELS / f"{stem}.cu").read_text()
         clc = clc_source(base)
-        for gsm in GSMS:
-            body = clc.replace(
-                "constexpr int GROUP_SIZE_M = 8;",
-                f"constexpr int GROUP_SIZE_M = {gsm};", 1)
-            name = f"{stem}-clc" + ("" if gsm == 8 else f"-gsm{gsm}")
-            (KERNELS / f"{name}.cu").write_text(body)
-            written.append(name)
+        for depth in DEPTHS:
+            for gsm in GSMS:
+                body = clc.replace(
+                    "constexpr int GROUP_SIZE_M = 8;",
+                    f"constexpr int GROUP_SIZE_M = {gsm};", 1)
+                body = body.replace(
+                    "constexpr int CLC_DEPTH        = 3;",
+                    f"constexpr int CLC_DEPTH        = {depth};", 1)
+                tag = f"-clc{depth}"
+                name = f"{stem}{tag}" + ("" if gsm == 8 else f"-gsm{gsm}")
+                (KERNELS / f"{name}.cu").write_text(body)
+                written.append(name)
     for name in written:
         print(f"wrote mmc/kernels/{name}.cu")
 

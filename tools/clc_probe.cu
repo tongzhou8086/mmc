@@ -10,10 +10,13 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <cuda_runtime.h>
 
 constexpr int CTA_GROUP = 2;
-constexpr int CLC_DEPTH = 3;
+__device__ __constant__ int CLC_DEPTH_D;
+static int CLC_DEPTH_H = 3;
+constexpr int MAX_DEPTH = 8;
 
 __device__ __forceinline__ bool elect_sync() {
     uint32_t pred = 0;
@@ -61,15 +64,16 @@ __device__ __forceinline__ int clc_first_ctaid(uint32_t resp_smem) {
 // owner[t] = which home cluster ended up running tile t (each must be hit once).
 __global__ __cluster_dims__(CTA_GROUP, 1, 1) __launch_bounds__(128, 1)
 void probe(int *tiles_per_cluster, int *owner, int *launched) {
-    __shared__ __align__(16) uint32_t clc_resp[CLC_DEPTH][4];
-    __shared__ uint64_t mbar_full[CLC_DEPTH];
+    __shared__ __align__(16) uint32_t clc_resp[MAX_DEPTH][4];
+    __shared__ uint64_t mbar_full[MAX_DEPTH];
+    const int depth = CLC_DEPTH_D;
 
     int cta_rank;
     asm volatile("mov.b32 %0, %%cluster_ctarank;" : "=r"(cta_rank));
     const int home = (int)blockIdx.x / CTA_GROUP;
 
     if (threadIdx.x == 0) {
-        for (int i = 0; i < CLC_DEPTH; i++) {
+        for (int i = 0; i < depth; i++) {
             mbarrier_init((uint32_t)__cvta_generic_to_shared(&mbar_full[i]), 1);
             signal_on_bytes_loaded(
                 (uint32_t)__cvta_generic_to_shared(&mbar_full[i]), 16);
@@ -91,12 +95,12 @@ void probe(int *tiles_per_cluster, int *owner, int *launched) {
             // simulate a tile's worth of work so clusters finish at different times
             __nanosleep(1000 * (1 + (tile % 7)));
 
-            const int slot = item % CLC_DEPTH;
+            const int slot = item % depth;
             const uint32_t mb = (uint32_t)__cvta_generic_to_shared(&mbar_full[slot]);
             if (cta_rank == 0)
                 clc_try_cancel(
                     (uint32_t)__cvta_generic_to_shared(&clc_resp[slot][0]), mb);
-            wait_phase(mb, (uint32_t)((item / CLC_DEPTH) & 1));
+            wait_phase(mb, (uint32_t)((item / depth) & 1));
             const int ctaid = clc_first_ctaid(
                 (uint32_t)__cvta_generic_to_shared(&clc_resp[slot][0]));
             signal_on_bytes_loaded(mb, 16);
@@ -107,10 +111,13 @@ void probe(int *tiles_per_cluster, int *owner, int *launched) {
     }
 }
 
-int main() {
+int main(int argc, char **argv) {
+    const int tiles_arg = argc > 1 ? atoi(argv[1]) : 1000;
+    CLC_DEPTH_H = argc > 2 ? atoi(argv[2]) : 3;
+    cudaMemcpyToSymbol(CLC_DEPTH_D, &CLC_DEPTH_H, sizeof(int));
     int sm_count = 0;
     cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0);
-    const int tiles = 1000;                       // pretend output tiles
+    const int tiles = tiles_arg;                  // pretend output tiles
     int *d_counts, *d_owner, *d_launched;
     cudaMalloc(&d_counts, tiles * sizeof(int));
     cudaMalloc(&d_owner, tiles * sizeof(int));
@@ -126,9 +133,9 @@ int main() {
         return 1;
     }
 
-    int counts[tiles], owner[tiles], launched = 0;
-    cudaMemcpy(counts, d_counts, sizeof(counts), cudaMemcpyDeviceToHost);
-    cudaMemcpy(owner, d_owner, sizeof(owner), cudaMemcpyDeviceToHost);
+    int *counts = new int[tiles], *owner = new int[tiles], launched = 0;
+    cudaMemcpy(counts, d_counts, tiles * sizeof(int), cudaMemcpyDeviceToHost);
+    cudaMemcpy(owner, d_owner, tiles * sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(&launched, d_launched, sizeof(int), cudaMemcpyDeviceToHost);
 
     int total = 0, active = 0, maxc = 0, missing = 0, dup = 0;
@@ -139,12 +146,19 @@ int main() {
         if (owner[i] == 0) missing++;
         if (owner[i] > 1) dup++;
     }
+    printf("depth               %d\n", CLC_DEPTH_H);
     printf("SMs                 %d  (=> %d cluster slots)\n", sm_count, sm_count / 2);
     printf("grid                %d clusters\n", tiles);
     printf("clusters launched   %d\n", launched);
     printf("clusters that ran   %d\n", active);
     printf("tiles executed      %d  (expected %d)\n", total, tiles);
     printf("max tiles/cluster   %d\n", maxc);
+    int hist[16] = {0};
+    for (int i = 0; i < tiles; i++)
+        if (counts[i] > 0) hist[counts[i] < 15 ? counts[i] : 15]++;
+    printf("tiles/cluster hist  ");
+    for (int i = 1; i <= maxc && i < 16; i++) printf("%dx%d ", hist[i], i);
+    printf("\n");
     printf("tiles never run     %d\n", missing);
     printf("tiles run twice+    %d\n", dup);
     printf("%s\n", (total == tiles && missing == 0 && dup == 0)

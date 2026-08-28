@@ -22,8 +22,20 @@ from mmc._runtime import runtime_for
 GSMS = (8, 12, 16)
 BKS = (64, 128)
 DESIGNS = [
-    ("clc", {64: "bf16-double-ns6-store2-bk64-bn512-2round-clc",
-             128: "bf16-double-ns3-store2-bk128-bn512-2round-clc"}, True),
+    # claim depth is how many tiles a cluster runs ahead of its consumers.
+    # Shallow wins: a deep claim hoards tiles at the tail of the grid.
+    ("clc1", {64: "bf16-double-ns6-store2-bk64-bn512-2round-clc1",
+              128: "bf16-double-ns3-store2-bk128-bn512-2round-clc1"}, True),
+    ("clc2", {64: "bf16-double-ns6-store2-bk64-bn512-2round-clc2",
+              128: "bf16-double-ns3-store2-bk128-bn512-2round-clc2"}, True),
+    ("clc3", {64: "bf16-double-ns6-store2-bk64-bn512-2round-clc3",
+              128: "bf16-double-ns3-store2-bk128-bn512-2round-clc3"}, True),
+    # The design-4 kernel launched with the CLC grid. Its static stride then
+    # equals the cluster count, so every cluster runs exactly one tile: this is
+    # "full grid, no persistence, no CLC", the control that says how much of any
+    # CLC delta is stealing and how much is just the grid shape.
+    ("fullgrid", {64: "bf16-double-ns6-store2-bk64-bn512-2round",
+                  128: "bf16-double-ns3-store2-bk128-bn512-2round"}, True),
     ("2round", {64: "bf16-double-ns6-store2-bk64-bn512-2round",
                 128: "bf16-double-ns3-store2-bk128-bn512-2round"}, False),
 ]
@@ -99,24 +111,29 @@ def main():
                                for bk, g in cols)
             print(f"| {S}³ | {cells} | {rows[S]['torch']:.0f} |")
 
+    tags = [t for t, _, _ in DESIGNS]
     print("\n## best of each design, and the wave picture\n")
-    print("| Shape | clusters | waves | clc | 2round | delta | cuBLAS | clc vs cuBLAS |")
-    print("|---:|---:|---:|---:|---:|---:|---:|---:|")
+    print("| Shape | clusters | waves | " + " | ".join(tags)
+          + " | cuBLAS | best clc vs 2round |")
+    print("|---:" * (len(tags) + 5) + "|")
     for S in args.shapes:
         clusters, slots, waves = tile_counts(S, sm_count)
         best = {t: max(rows[S][f"{t}/bk{bk}/gsm{g}"] for bk, g in cols)
-                for t, _, _ in DESIGNS}
-        c, r, t = best["clc"], best["2round"], rows[S]["torch"]
-        print(f"| {S}³ | {clusters} | {waves:.2f} | {c:.0f} | {r:.0f} | "
-              f"{(c - r) / r:+.1%} | {t:.0f} | {(c - t) / t:+.1%} |")
+                for t in tags}
+        r, t = best["2round"], rows[S]["torch"]
+        bestclc = max(best[k] for k in tags if k.startswith("clc"))
+        print(f"| {S}³ | {clusters} | {waves:.2f} | "
+              + " | ".join(f"{best[k]:.0f}" for k in tags)
+              + f" | {t:.0f} | {(bestclc - r) / r:+.1%} |")
 
     print("\n## clc minus 2round, paired within each config (%)\n")
     print("| Config | " + " | ".join(f"{S}³" for S in args.shapes) + " |")
     print("|---:" * (len(args.shapes) + 1) + "|")
-    for bk, g in cols:
-        d = [(rows[S][f"clc/bk{bk}/gsm{g}"] / rows[S][f"2round/bk{bk}/gsm{g}"] - 1)
-             for S in args.shapes]
-        print(f"| BK={bk} GSM={g} | " + " | ".join(f"{x:+.1%}" for x in d) + " |")
+    for tag in [t for t in tags if t != "2round"]:
+        for bk, g in cols:
+            d = [(rows[S][f"{tag}/bk{bk}/gsm{g}"] / rows[S][f"2round/bk{bk}/gsm{g}"] - 1)
+                 for S in args.shapes]
+            print(f"| {tag} BK={bk} GSM={g} | " + " | ".join(f"{x:+.1%}" for x in d) + " |")
 
 
 if __name__ == "__main__":

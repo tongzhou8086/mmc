@@ -26,17 +26,18 @@ GRID = "#e3e7ec"
 SERIES = [
     ("torch.matmul (cuBLAS)", "#b7bfc9"),
     ("design 4 (static persistent)", "#7f9dbb"),
-    ("design 5 (+ cluster launch control)", "#4f7a52"),
+    ("design 5 (CLC, claim depth 1)", "#4f7a52"),
 ]
+# which sweep tag each series reads
+TAGS = ("cublas", "2round", "clc1")
 
 
 def parse(path):
     """{shape: {config: tflops}} for both designs, plus cuBLAS."""
     text = Path(path).read_text()
     out = {}
-    for tag in ("clc", "2round"):
-        m = re.search(rf"^## {tag}\n(.*?)(?=\n## |\Z)", text,
-                      re.S | re.M)
+    for tag in ("clc1", "clc2", "clc3", "fullgrid", "2round"):
+        m = re.search(rf"^## {tag}\n(.*?)(?=\n## |\Z)", text, re.S | re.M)
         if not m:
             raise SystemExit(f"no '## {tag}' table in {path}")
         header = None
@@ -64,7 +65,7 @@ def main():
     def best(shape, tag):
         return max(v for k, v in data[shape].items() if k.startswith(tag))
 
-    rows = [(s, data[s]["cublas"], best(s, "2round"), best(s, "clc"))
+    rows = [(s, data[s]["cublas"], best(s, "2round"), best(s, "clc1"))
             for s in shapes]
 
     fig, ax = plt.subplots(figsize=(11.6, 5.0))
