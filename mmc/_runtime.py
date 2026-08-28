@@ -7,6 +7,9 @@ from cuda.bindings import driver
 
 from ._kernels import BM, BN, BN_LOCAL, STORE_N, KernelSpec
 
+# CLC kernels are the BN=512 designs; their cluster covers 2*BM x 512.
+BN_512 = 512
+
 
 TMA_UINT8 = 0
 TMA_BFLOAT16 = 9
@@ -315,7 +318,15 @@ class Runtime:
         kernel_params = (ctypes.c_void_p * len(argument_storage))(
             *[ctypes.addressof(arg) for arg in argument_storage]
         )
-        grid = self.sm_count - self.sm_count % 2
+        if spec.clc:
+            # One cluster (CTA_GROUP = 2 CTAs) per output tile. The grid is
+            # deliberately larger than the device: clusters that have not been
+            # launched are the pool that running clusters cancel from.
+            cluster_m = (m + 2 * BM - 1) // (2 * BM)
+            cluster_n = (n + BN_512 - 1) // BN_512
+            grid = 2 * cluster_m * cluster_n
+        else:
+            grid = self.sm_count - self.sm_count % 2
         launch_args = (
             self._function(spec),
             grid, 1, 1,
