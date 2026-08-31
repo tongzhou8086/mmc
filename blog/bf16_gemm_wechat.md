@@ -193,12 +193,12 @@ for tile in my_output_tiles:
 
 
 ### 设计二：单 buffer BN512
-在设计二中我们换一种思路：把整个 TMEM 当作一块逻辑 MMA buffer 用，BN 配为 512。再次计算下 tile sizes 我们能发现，每个 k tile 的数据量变为 1.5 倍（32KB → 48KB），而计算量变为两倍，也就是说同样的数据量能产生更多的计算，等价于减少了 RAW 停顿；而 tradeoff 则是只剩一块 accumulator，epilogue 在 drain 它的时候后续的 MMA 无法开始 issue，于是在两个 output tile 的交接处重新出现了 WAR 停顿。由于 WAR 停顿发生在外层循环、RAW 停顿发生在内层循环，我们有理由推测，k 迭代次数越多，产生的 WAR 停顿影响就越小。
+在设计二中我们换一种思路：把整个 TMEM 当作一块逻辑 MMA buffer 用，BN 配为 512。再次计算下 tile sizes 我们能发现，每个 k tile 的数据量变为 1.5 倍（32KB → 48KB），而计算量变为两倍，也就是说同样的数据量能产生更多的计算，减少了从内存中拉取数据的等待，即减少了 RAW 停顿；而 tradeoff 则是只剩一块 accumulator，epilogue 在 drain 它的时候后续的 MMA 无法开始 issue，于是在两个 output tile 的交接处重新出现了 WAR 停顿。由于 WAR 停顿发生在外层循环、RAW 停顿发生在内层循环，我们有理由推测，k 迭代次数越多，产生的 WAR 停顿影响就越小。
 
-调度逻辑几乎可以照搬设计一，所以这里不再重复贴一遍代码，只说三处差别：
+调度逻辑和设计一大部分是一样的，除了下面三处差别：
 
-* MMA warp：代码完全一样，只是每次搬的数据量从 32KB 变成 48KB（B 的那一半从 16KB 变成 32KB），buffer 个数从 6 个变成 4 个（BK=128 时为 2 个）。
-* MMA warp：`acc = tile % 2` 这一层轮转消失了 —— 只有一块 accumulator。于是下一个 output tile 的第一条 MMA 必须等当前 tile  drain 完才能 issue，这正是前面说的、用算术强度换回来的 WAR 停顿。此外逻辑上 128 x 512 的 accumulator 需要两次 128 x 256 大小的 MMA 指令发射。
+* MMA warp：逻辑完全一样，只是每次搬的数据量从 32KB 变成 48KB（B 的那一半从 16KB 变成 32KB），buffer 个数从 6 个变成 4 个（BK=128 时为 2 个）。
+* MMA warp：`acc = tile % 2` 两个 MMA buffer 之间的轮转消失了 —— 只有一块 accumulator。于是下一个 output tile 的第一条 MMA 必须等当前 accumulator 的 draining 结束才能 issue，这正是前面说的、用算术强度换回来的 WAR 停顿。此外逻辑上 128 x 512 的 accumulator 需要两次 128 x 256 大小的 MMA 指令发射。
 * Epilogue warps：结构不变，仍然是按 64 列一段依次 drain，只是 BN 翻倍之后每个 output tile 从 4 段变成 8 段。
 
 #### 性能数字
