@@ -127,7 +127,7 @@ WAR 停顿来源于 write-after-read 数据依赖，这种依赖并非真实的�
 tcgen05.ld buffer 我们会默认配置为 128 x 64，即能装下 TMEM 数据的 64 列，有时会了加快 TMEM 结果的 draining（减少 WAR 停顿），我们会扩大 tcgen05.ld buffer，使用尽可能多的寄存器空间，这将是我们后续优化的一个重头戏。Store buffer 的大小我们也默认为 128 x 64， 即一个 buffer 大小为 16KB。与 BK 设为 64 的倍数的原因类似，这里每行凑满 64 列，便能保证 Coalesced Memory Write。
 
 ### Warp Specialization 配置
-因为我们的 5 种流水线操作需要能够并行起来，于是我们会给不同的 Warp 分配不同的角色，这也称为 Warp Specialization。对于本文所探讨的设计方案而言，均采用如下配置：
+为了让 5 种流水线操作需要能够并行起来，我们会给不同的 Warp 分配不同的角色，这也称为 Warp Specialization。对于本文所探讨的设计方案而言，均采用如下配置：
 
 * 配一个 Warp 进行异步的 TMA load issue，又称 TMA Warp
 * 配一个 Warp 进行异步的 MMA issue，又称 MMA Warp
