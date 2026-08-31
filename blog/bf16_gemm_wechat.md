@@ -163,7 +163,7 @@ for tile in my_output_tiles:
         make_free_on_mma_done(tma_buffers[s])    # MMA 消费完这片数据，TMA buffer 就能重新装填
     make_ready_on_mma_done(mma_buffers[acc])     # num_k 次累加全部完成，可以 drain 了
 ```
-可以看出这里 TMA warps 和 MMA warps 都有两层循环，外层循环对应不同的 output tiles，而内存循环对应同一个 output tiles 不同的 K tile 迭代。然后二者都使用一个全局的计数器`gk`在 6 个 TMA buffer（对于 BK=64 是 6 个，对于 BK=128 则是 3 个）上轮转。对于 TMA Warp 而言，它每次先等待对应的 TMA buffer 变为“可写”状态，之后发出加载数据的指令`tma_load_async`，以及一个异步的信号注册`make_ready_on_tma_done`，即，当数据加载到位以后，自动翻转 buffer 状态为“可读”。同样的，对于 MMA Warp 而言，它每次也是先等待对应的 TMA buffer 变为可读状态，之后便 issue MMA 指令，然后注册一个异步的信号`make_free_on_mma_done`，即，当对应的 TMA buffer 中的数据被消费完以后自动翻转其状态为可写。两者结构上唯一的差别是 MMA warp 多了一层 MMA buffer 的轮转 —— `acc = tile % 2`，每换一个 output tile 就换一块 accumulator，即用来消除 WAR 停顿的双 MMA buffer；每个 output tile 的第一次迭代前需要等待对应的 accumulator 已经被 drain 干净，而 num_k 次累加做完之后再用 `make_ready_on_mma_done` 通知 epilogue 可以开始 drain。
+可以看出这里 TMA warps 和 MMA warps 都有两层循环，外层循环对应不同的 output tiles，而内存循环对应同一个 output tiles 不同的 K tile 迭代。然后二者都使用一个全局的计数器`gk`在 6 个 TMA buffer（对于 BK=64 是 6 个，对于 BK=128 则是 3 个）上轮转。TMA Warp 每次先等待对应的 TMA buffer 变为“可写”状态，之后发出加载数据的指令`tma_load_async`，以及一个异步的信号注册`make_ready_on_tma_done`，即，当数据加载到位以后，硬件会自动翻转 buffer 状态为“可读”。同样的，对于 MMA Warp 而言，它每次也是先等待对应的 TMA buffer 变为可读状态，之后便 issue MMA 指令，然后注册一个异步的信号`make_free_on_mma_done`，即，当对应的 TMA buffer 中的数据被消费完以后自动翻转其状态为可写。两者结构上唯一的差别是 MMA warp 多了一层 MMA buffer 的轮转 —— `acc = tile % 2`，每换一个 output tile 就换一块 accumulator，用来减少 WAR 停顿的双 MMA buffer；每个 output tile 的第一次迭代前需要等待对应的 accumulator 已经被 drain 干净，状态转为“可写”；而 num_k 次累加做完之后再用 `make_ready_on_mma_done` 通知 epilogue 可以开始 drain。
 
 epilogue warps 那一侧的逻辑如下：
 
@@ -180,7 +180,7 @@ for tile in my_output_tiles:
         stage(ld_buffer, store_buffers[c % 2])         # RMEM -> SMEM，同步
         tma_store_async(store_buffers[c % 2], C[tile, c])   # SMEM -> 内存，异步
 ```
-在 epilogue 的部分，我们先等待 MMA buffer 变为“可读”，然后在一个循环里面每次读取 TMEM 结果的 64 列，在最后的 64 列读取完毕以后，便可释放完成 draining 的 MMA buffer，即上面的`make_free`。每 64 列读取完以后，先等待有 store buffer 空出来了，然后往里面进行写入，最后 issue 一个 TMA store。
+在 epilogue 的部分，我们先等待 MMA buffer 变为“可读”，然后在一个循环里面每次读取 TMEM 结果的 64 列，在最后的 64 列读取完毕以后，便可释放完成 draining 的 MMA buffer，即上面的`make_free`。每 64 列读取完以后，先等待有 store buffer 空出来了，然后往里面进行写入，每行会有连续的 64 列输出结果，最后 issue 一个 TMA store。
 
 #### 性能数字
 
@@ -193,7 +193,7 @@ for tile in my_output_tiles:
 
 
 ### 设计二：单 buffer BN512
-在设计二中我们换一种思路：把整个 TMEM 当作一块 MMA buffer 用，BN 配为 512。再次计算下 tile sizes 我们能发现，每个 k tile 的数据量变为 1.5 倍（32KB → 48KB），而计算量变为两倍，也就是说同样的数据能喂出更多的计算，等价于减少了 RAW 停顿；而 tradeoff 则是只剩一块 accumulator，epilogue 在 drain 它的时候后续的 MMA 无法开始 issue，于是在两个 output tile 的交接处重新出现了 WAR 停顿。由于 WAR 停顿发生在外层循环、RAW 停顿发生在内层循环，我们有理由推测，k 迭代次数越多，产生的 WAR 停顿影响就越小。
+在设计二中我们换一种思路：把整个 TMEM 当作一块逻辑 MMA buffer 用，BN 配为 512。再次计算下 tile sizes 我们能发现，每个 k tile 的数据量变为 1.5 倍（32KB → 48KB），而计算量变为两倍，也就是说同样的数据量能产生更多的计算，等价于减少了 RAW 停顿；而 tradeoff 则是只剩一块 accumulator，epilogue 在 drain 它的时候后续的 MMA 无法开始 issue，于是在两个 output tile 的交接处重新出现了 WAR 停顿。由于 WAR 停顿发生在外层循环、RAW 停顿发生在内层循环，我们有理由推测，k 迭代次数越多，产生的 WAR 停顿影响就越小。
 
 调度逻辑几乎可以照搬设计一，所以这里不再重复贴一遍代码，只说三处差别：
 
